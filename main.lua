@@ -145,6 +145,7 @@ function feedfile(client, req)
 		if not path then
 			print(err)
 			client:write(http_response('Forbidden', 403, 'Forbidden'))
+			client:close()
 			return false
 		elseif path == config.root_dir then 
 			path = config.root_dir..'index.html' 
@@ -154,7 +155,7 @@ function feedfile(client, req)
 		local file = luv.fs.open(path, "r", "664")
 		--print(file_t)
 		local last_modified_time = tonumber(req.headers['If-Modified-Since'])
-		if not file_t then
+		if not file_t or file_t.is_directory then
 			client:write(http_response('Not Found', 404, 'Not Found', {
 				['content-type'] = 'text/plain'
 			}))
@@ -180,8 +181,9 @@ function feedfile(client, req)
 			end
 
 			file:close()
-			client:shutdown()
 		end
+		--client:shutdown()
+		--client:close()
 	end)
 
 	f1:ready()
@@ -205,7 +207,8 @@ local channel_pull = zmq:socket(luv.zmq.PULL)
 channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
 local function receivePullZmqMsg()
 	local msg = channel_pull:recv()
-	return cmsgpack.unpack(msg)
+	-- return cmsgpack.unpack(msg)
+	return msg
 end
 
 
@@ -225,6 +228,11 @@ function serviceDispatcher(client, req)
 			}))
 			
 		end
+	else
+		root_dir(req.path, '404 Not Found.')
+		client:write(http_response('Not Found', 404, 'Not Found', {
+			['content-type'] = 'text/plain'
+		}))
 	end
 end
 
@@ -243,20 +251,11 @@ local main = luv.fiber.create(function()
          while true do
             local got, reqstr = client:read()
             if got then
-		-- print(reqstr)
+		-- root_dir(reqstr)
             	local bytes_read = parser:execute(reqstr)
 		if bytes_read > 0 then
-			-- feedfile(client, req)
-			sendPushZmqMsg(cmsgpack.pack(req))
+			serviceDispatcher(client, req)
 		end
-		local res = receivePullZmqMsg()
-		client:write(http_response(luv.codec.encode(res), 200, 'OK'))
-		-- print(str)
-            	--local bytes_read = parser:execute(reqstr)
-		-- print('bytes_read', bytes_read)
-		--if bytes_read > 0 then
-		--	feedfile(client, req)
-		--end
             else
 		client:close()
 		break

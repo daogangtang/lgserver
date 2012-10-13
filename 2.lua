@@ -17,7 +17,8 @@ local cons = luv.fiber.create(function()
 		if msg then
 			print(msg)
 			--pub:send('haha, I have receive your request '.. msg)
-			pub:send(msg)
+			--pub:send(msg)
+			pub:send('I like you '..math.random())
 		end
 		--luv.sleep(1)
 	end
