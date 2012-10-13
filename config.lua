@@ -4,6 +4,7 @@ static_default = { type="dir", base='media/', index_file='index.html', default_c
 
 
 handler_mmshuxia = { type="handler", 
+		sender_id="mmshuxia",
 		send_spec='tcp://127.0.0.1:1234',
                 send_ident='mmshuxia',
                 recv_spec='tcp://127.0.0.1:1235', 
@@ -21,6 +22,7 @@ server1 = {
     hosts = { 
         {       name="mmshuxia.com",
 		matching="mmshuxia.com",
+		['max-age'] = 60,
                 routes={
 			['/'] = handler_mmshuxia,
 			['/media/'] = static_mmshuxia,

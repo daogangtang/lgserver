@@ -8,6 +8,7 @@ local mimetypes = require 'mime'
 local allconfig = {}
 setfenv(assert(loadfile('./config.lua')), setmetatable(allconfig, {__index=_G}))()
 local config = allconfig.servers[1]
+local host = config.hosts[1]
 local routes = config.hosts[1].routes
 
 local patterns = {}
@@ -71,12 +72,11 @@ end
 
 local req = nil
 function init_parser()
-   local reqs	= {}
    local cur	= {}
    local cb     = {}
 
    function cb.on_message_begin()
-	cur = {headers = {}, body={}}
+	cur = {headers = {}, data={}}
    end
 
    function cb.on_url(url)
@@ -93,14 +93,14 @@ function init_parser()
 --	if ( nil == cur.body ) then
 --		cur.body = {}
 --	end
-	table.insert(cur.body, body)
+	cur.body = body
    end
    
    function cb.on_message_complete()
 	--table.remove(reqs)
 	--table.insert(reqs, cur)
 	req = cur
-	cur = {headers = {}, body={}}
+	cur = {headers = {}, data={}}
    end
 
    return lhp.request(cb)
@@ -123,7 +123,7 @@ end
 function regularPath(path)
 	local orig_path = path
 	path = config.root_dir..path
-	path = path:gsub('/+', '/')
+	path = path:gsub('/+', '/') 
 	
 	local l = #config.root_dir
 	local count = 0
@@ -168,7 +168,7 @@ function feedfile(client, req)
 				['content-type'] = req['content-type'],
 				['content-length'] = size,
 				['Last-Modified'] = file_t.mtime,
-				['Cache-Control'] = 'max-age=60'
+				['Cache-Control'] = 'max-age'..host['max-age']
 			})
 			client:write(res)
 			while true do
@@ -182,8 +182,6 @@ function feedfile(client, req)
 
 			file:close()
 		end
-		--client:shutdown()
-		--client:close()
 	end)
 
 	f1:ready()
@@ -241,7 +239,7 @@ local main = luv.fiber.create(function()
    local server = luv.net.tcp()
    --server:bind("127.0.0.1", 8080)
    server:bind("0.0.0.0", 8080)
-   server:listen()
+   server:listen(10000)
 
    while true do
       local client = luv.net.tcp()
@@ -251,9 +249,11 @@ local main = luv.fiber.create(function()
          while true do
             local got, reqstr = client:read()
             if got then
-		-- root_dir(reqstr)
             	local bytes_read = parser:execute(reqstr)
 		if bytes_read > 0 then
+			local peer_t = client:getpeername()
+			-- add conn_id using peer port
+			req['conn_id'] = peer_t.port
 			serviceDispatcher(client, req)
 		end
             else
