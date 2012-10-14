@@ -33,8 +33,11 @@ end
 local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
 
 local function http_response(body, code, status, headers)
+    code = code or 200
+    status = status or "OK"
     headers = headers or {}
-    headers['content-length'] = #body
+    headers['Content-Type'] = headers['Content-Type'] or 'text/plain'
+    headers['Content-Length'] = #body
 
     local raw = {}
     for k, v in pairs(headers) do
@@ -205,8 +208,8 @@ local channel_pull = zmq:socket(luv.zmq.PULL)
 channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
 local function receivePullZmqMsg()
 	local msg = channel_pull:recv()
-	-- return cmsgpack.unpack(msg)
-	return msg
+	return cmsgpack.unpack(msg)
+	-- return msg
 end
 
 
@@ -220,10 +223,10 @@ function serviceDispatcher(client, req)
 			sendPushZmqMsg(cmsgpack.pack(req))
 			-- res is the response string from handler
 			local res = receivePullZmqMsg()
+			--client:write(res.data)
+			-- for i, v in pairs(res) do print(i, v) end
 			-- client:write(http_response(luv.codec.encode(res), 200, 'OK'))
-			client:write(http_response(res, 200, 'OK', {
-				['content-type'] = req['content-type']
-			}))
+			client:write(http_response(res.data, res.code, res.status, res.headers))
 			
 		end
 	else
@@ -239,7 +242,7 @@ local main = luv.fiber.create(function()
    local server = luv.net.tcp()
    --server:bind("127.0.0.1", 8080)
    server:bind("0.0.0.0", 8080)
-   server:listen(10000)
+   server:listen(100)
 
    while true do
       local client = luv.net.tcp()
@@ -249,11 +252,15 @@ local main = luv.fiber.create(function()
          while true do
             local got, reqstr = client:read()
             if got then
+		print(reqstr)
             	local bytes_read = parser:execute(reqstr)
 		if bytes_read > 0 then
 			local peer_t = client:getpeername()
 			-- add conn_id using peer port
 			req['conn_id'] = peer_t.port
+			req['method'] = parser:method()
+			req['version'] = parser:version()
+			
 			serviceDispatcher(client, req)
 		end
             else
