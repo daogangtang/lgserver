@@ -171,7 +171,7 @@ function feedfile(client, req)
 				['content-type'] = req['content-type'],
 				['content-length'] = size,
 				['Last-Modified'] = file_t.mtime,
-				['Cache-Control'] = 'max-age'..host['max-age']
+				['Cache-Control'] = 'max-age='..host['max-age']
 			})
 			client:write(res)
 			while true do
@@ -185,16 +185,19 @@ function feedfile(client, req)
 
 			file:close()
 		end
+		client:close()
 	end)
 
 	f1:ready()
 end
 
-
-
 local zmq = luv.zmq.create(1)
-local channel_push = zmq:socket(luv.zmq.PUSH)
-channel_push:bind(config.hosts[1].routes['/'].send_spec)
+local channel_push
+
+if config.hosts[1].routes['/'].send_spec then
+	channel_push = zmq:socket(luv.zmq.PUSH)
+	channel_push:bind(config.hosts[1].routes['/'].send_spec)
+end
 
 local function sendPushZmqMsg( msg )
 	local f = luv.fiber.create(function ()
@@ -204,8 +207,13 @@ local function sendPushZmqMsg( msg )
 	f:ready()
 end
 
-local channel_pull = zmq:socket(luv.zmq.PULL)
-channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
+local channel_pull
+if config.hosts[1].routes['/'].recv_spec then
+	channel_pull = zmq:socket(luv.zmq.PULL)
+	channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
+end
+
+
 local function receivePullZmqMsg()
 	local msg = channel_pull:recv()
 	return cmsgpack.unpack(msg)
@@ -242,7 +250,7 @@ local main = luv.fiber.create(function()
    local server = luv.net.tcp()
    --server:bind("127.0.0.1", 8080)
    server:bind("0.0.0.0", 8080)
-   server:listen(100)
+   server:listen(10000)
 
    while true do
       local client = luv.net.tcp()
@@ -252,7 +260,7 @@ local main = luv.fiber.create(function()
          while true do
             local got, reqstr = client:read()
             if got then
-		print(reqstr)
+		-- print(reqstr)
             	local bytes_read = parser:execute(reqstr)
 		if bytes_read > 0 then
 			local peer_t = client:getpeername()

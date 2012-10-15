@@ -24,6 +24,7 @@ server1 = {
 		matching="mmshuxia.com",
 		['max-age'] = 60,
                 routes={
+	--		['/'] = static_mmshuxia,
 			['/'] = handler_mmshuxia,
 			['/media/'] = static_mmshuxia,
                 }
