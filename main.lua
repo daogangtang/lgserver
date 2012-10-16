@@ -73,13 +73,12 @@ local function parse_path_query_fragment(uri)
     return path or '/', query, fragment
 end
 
-local req = nil
-function init_parser()
-   local cur	= {}
+function init_parser(req)
+   local cur	= req
    local cb     = {}
 
    function cb.on_message_begin()
-	cur = {headers = {}, data={}}
+--	cur = {headers = {}, data={}}
    end
 
    function cb.on_url(url)
@@ -102,15 +101,13 @@ function init_parser()
    function cb.on_message_complete()
 	--table.remove(reqs)
 	--table.insert(reqs, cur)
-	req = cur
-	cur = {headers = {}, data={}}
+--	req = cur
+--	cur = {headers = {}, data={}}
    end
 
    return lhp.request(cb)
 end
 
-
-local parser = init_parser()
 
 
 function findtype(req)
@@ -257,10 +254,12 @@ local main = luv.fiber.create(function()
       server:accept(client)
 
       local child = luv.fiber.create(function()
-         while true do
+       --  while true do
             local got, reqstr = client:read()
             if got then
 		-- print(reqstr)
+		local req = {headers={}, data={}}
+		local parser = init_parser(req)
             	local bytes_read = parser:execute(reqstr)
 		if bytes_read > 0 then
 			local peer_t = client:getpeername()
@@ -273,9 +272,9 @@ local main = luv.fiber.create(function()
 		end
             else
 		client:close()
-		break
+		--break
             end
-         end
+         --end
       end)
 
       -- put it in the ready queue
