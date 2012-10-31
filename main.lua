@@ -1,8 +1,16 @@
 -- includes
-local luv = require 'luv'
-local lhp = require 'http.parser'
+local fs = lev.fs
+local os = require('os')
+local math = require('math')
+local table = require('table')
+local string = require('string')
+local qs = require('querystring')
+local web = require('web')
+
 local cmsgpack = require 'cmsgpack'
+local zmq = require 'zmq'
 local mimetypes = require 'mime'
+
 
 -- load configurations
 local allconfig = {}
@@ -188,34 +196,34 @@ function feedfile(client, req)
 	f1:ready()
 end
 
-local zmq = luv.zmq.create(1)
-local channel_push
+-- local zmq = luv.zmq.create(1)
+-- local channel_push
 
-if config.hosts[1].routes['/'].send_spec then
-	channel_push = zmq:socket(luv.zmq.PUSH)
-	channel_push:bind(config.hosts[1].routes['/'].send_spec)
-end
+-- if config.hosts[1].routes['/'].send_spec then
+-- 	channel_push = zmq:socket(luv.zmq.PUSH)
+-- 	channel_push:bind(config.hosts[1].routes['/'].send_spec)
+-- end
 
-local function sendPushZmqMsg( msg )
-	local f = luv.fiber.create(function ()
-		channel_push:send(msg)
-	end)
+-- local function sendPushZmqMsg( msg )
+-- 	local f = luv.fiber.create(function ()
+-- 		channel_push:send(msg)
+-- 	end)
 	
-	f:ready()
-end
+-- 	f:ready()
+-- end
 
-local channel_pull
-if config.hosts[1].routes['/'].recv_spec then
-	channel_pull = zmq:socket(luv.zmq.PULL)
-	channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
-end
+-- local channel_pull
+-- if config.hosts[1].routes['/'].recv_spec then
+-- 	channel_pull = zmq:socket(luv.zmq.PULL)
+-- 	channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
+-- end
 
 
-local function receivePullZmqMsg()
-	local msg = channel_pull:recv()
-	return cmsgpack.unpack(msg)
-	-- return msg
-end
+-- local function receivePullZmqMsg()
+-- 	local msg = channel_pull:recv()
+-- 	return cmsgpack.unpack(msg)
+-- 	-- return msg
+-- end
 
 
 function serviceDispatcher(client, req)
@@ -243,48 +251,99 @@ function serviceDispatcher(client, req)
 end
 
 
-local main = luv.fiber.create(
-	function()
-		local server = luv.net.tcp()
-		--server:bind("127.0.0.1", 8080)
-		server:bind("0.0.0.0", 8080)
-		server:listen(100)
+-- local main = luv.fiber.create(
+-- 	function()
+-- 		local server = luv.net.tcp()
+-- 		--server:bind("127.0.0.1", 8080)
+-- 		server:bind("0.0.0.0", 8080)
+-- 		server:listen(100)
 
-		while true do
-			local client = luv.net.tcp()
-			server:accept(client)
+-- 		while true do
+-- 			local client = luv.net.tcp()
+-- 			server:accept(client)
 
-			local child = luv.fiber.create(
-				function()
-					while true do
-						local got, reqstr = client:read()
-						if got then
-							-- print(reqstr)
-							local req = {headers={}, data={}}
-							local parser = init_parser(req)
-							local bytes_read = parser:execute(reqstr)
-							if bytes_read > 0 then
-								local peer_t = client:getpeername()
-								-- add conn_id using peer port
-								req['conn_id'] = peer_t.port
-								req['method'] = parser:method()
-								req['version'] = parser:version()
+-- 			local child = luv.fiber.create(
+-- 				function()
+-- 					while true do
+-- 						local got, reqstr = client:read()
+-- 						if got then
+-- 							-- print(reqstr)
+-- 							local req = {headers={}, data={}}
+-- 							local parser = init_parser(req)
+-- 							local bytes_read = parser:execute(reqstr)
+-- 							if bytes_read > 0 then
+-- 								local peer_t = client:getpeername()
+-- 								-- add conn_id using peer port
+-- 								req['conn_id'] = peer_t.port
+-- 								req['method'] = parser:method()
+-- 								req['version'] = parser:version()
 								
-								serviceDispatcher(client, req)
-								--client:close()
-							end
-						else
-							client:close()
-							break
-						end
-					end
-				end)
+-- 								serviceDispatcher(client, req)
+-- 								--client:close()
+-- 							end
+-- 						else
+-- 							client:close()
+-- 							break
+-- 						end
+-- 					end
+-- 				end)
 
-			-- put it in the ready queue
-			child:ready()
-		end
-	end)
+-- 			-- put it in the ready queue
+-- 			child:ready()
+-- 		end
+-- 	end)
 
-main:ready()
-main:join()
+-- main:ready()
+-- main:join()
 
+local zmq = require"zmq"
+
+local ctx = zmq.init()
+local s = ctx:socket(zmq.PUB)
+
+s:bind("tcp://lo:5555")
+
+local s2 = ctx:socket(zmq.SUB)
+s2:setopt(zmq.SUBSCRIBE, "")
+s2:connect("tcp://localhost:5556")
+
+
+local clientOnRequest = function(c, req, res)
+	p(c, req, res)
+	
+	p('-----------------------')
+
+	local msg_id = 1
+	s:send(tostring(msg_id))
+	msg_id = msg_id + 1
+
+	-- 确实阻塞了
+	-- local msg = s:recv()
+	-- p(msg)
+
+	p('___>>>')
+	-- local route = path_handlers[ req.url.path ]
+	-- local static = STATICS[ req.url.path ]
+	-- if route then
+	-- 	route( c, req, res )
+	-- elseif static then -- oh, you want some static data!
+	-- 	if not static.buf then
+	-- 		local err
+	-- 		err, static.buf = fs.readFile(__path__ .. static.name)
+	-- 		if err then
+	-- 			res.writeHead(500)
+	-- 			res.fin( "File Error!" )
+	-- 			return
+	-- 		end
+	-- 	end
+	-- 	res.writeHead(200, {["Content-Type"] = static.type, ["Content-Length"] = tostring(#static.buf)})
+	-- 	res.fin( static.buf )
+	-- else
+	-- 	res.writeHead(404)
+	-- 	res.fin( "Bad Route!" )
+	-- end
+end
+
+web.createServer(nil, 8080, clientOnRequest) --X:E createServer
+
+p("http server listening on port 8080!")
