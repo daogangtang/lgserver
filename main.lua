@@ -1,8 +1,12 @@
 -- includes
-local luv = require 'luv'
+
 local lhp = require 'http.parser'
 local cmsgpack = require 'cmsgpack'
 local mimetypes = require 'mime'
+local copas = require 'copas'
+
+local zmq = require"zmq"
+local poller = require('zmq.poller')(64)
 
 -- load configurations
 local allconfig = {}
@@ -188,34 +192,34 @@ function feedfile(client, req)
 	f1:ready()
 end
 
-local zmq = luv.zmq.create(1)
-local channel_push
+-- local zmq = luv.zmq.create(1)
+-- local channel_push
 
-if config.hosts[1].routes['/'].send_spec then
-	channel_push = zmq:socket(luv.zmq.PUSH)
-	channel_push:bind(config.hosts[1].routes['/'].send_spec)
-end
+-- if config.hosts[1].routes['/'].send_spec then
+-- 	channel_push = zmq:socket(luv.zmq.PUSH)
+-- 	channel_push:bind(config.hosts[1].routes['/'].send_spec)
+-- end
 
-local function sendPushZmqMsg( msg )
-	local f = luv.fiber.create(function ()
-		channel_push:send(msg)
-	end)
+-- local function sendPushZmqMsg( msg )
+-- 	local f = luv.fiber.create(function ()
+-- 		channel_push:send(msg)
+-- 	end)
 	
-	f:ready()
-end
+-- 	f:ready()
+-- end
 
-local channel_pull
-if config.hosts[1].routes['/'].recv_spec then
-	channel_pull = zmq:socket(luv.zmq.PULL)
-	channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
-end
+-- local channel_pull
+-- if config.hosts[1].routes['/'].recv_spec then
+-- 	channel_pull = zmq:socket(luv.zmq.PULL)
+-- 	channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
+-- end
 
 
-local function receivePullZmqMsg()
-	local msg = channel_pull:recv()
-	return cmsgpack.unpack(msg)
-	-- return msg
-end
+-- local function receivePullZmqMsg()
+-- 	local msg = channel_pull:recv()
+-- 	return cmsgpack.unpack(msg)
+-- 	-- return msg
+-- end
 
 
 function serviceDispatcher(client, req)
@@ -243,48 +247,121 @@ function serviceDispatcher(client, req)
 end
 
 
-local main = luv.fiber.create(
-	function()
-		local server = luv.net.tcp()
-		--server:bind("127.0.0.1", 8080)
-		server:bind("0.0.0.0", 8080)
-		server:listen(100)
+-- local main = luv.fiber.create(
+-- 	function()
+-- 		local server = luv.net.tcp()
+-- 		--server:bind("127.0.0.1", 8080)
+-- 		server:bind("0.0.0.0", 8080)
+-- 		server:listen(100)
 
-		while true do
-			local client = luv.net.tcp()
-			server:accept(client)
+-- 		while true do
+-- 			local client = luv.net.tcp()
+-- 			server:accept(client)
 
-			local child = luv.fiber.create(
-				function()
-					while true do
-						local got, reqstr = client:read()
-						if got then
-							-- print(reqstr)
-							local req = {headers={}, data={}}
-							local parser = init_parser(req)
-							local bytes_read = parser:execute(reqstr)
-							if bytes_read > 0 then
-								local peer_t = client:getpeername()
-								-- add conn_id using peer port
-								req['conn_id'] = peer_t.port
-								req['method'] = parser:method()
-								req['version'] = parser:version()
+-- 			local child = luv.fiber.create(
+-- 				function()
+-- 					while true do
+-- 						local got, reqstr = client:read()
+-- 						if got then
+-- 							-- print(reqstr)
+-- 							local req = {headers={}, data={}}
+-- 							local parser = init_parser(req)
+-- 							local bytes_read = parser:execute(reqstr)
+-- 							if bytes_read > 0 then
+-- 								local peer_t = client:getpeername()
+-- 								-- add conn_id using peer port
+-- 								req['conn_id'] = peer_t.port
+-- 								req['method'] = parser:method()
+-- 								req['version'] = parser:version()
 								
-								serviceDispatcher(client, req)
-								--client:close()
-							end
-						else
-							client:close()
-							break
-						end
-					end
-				end)
+-- 								serviceDispatcher(client, req)
+-- 								--client:close()
+-- 							end
+-- 						else
+-- 							client:close()
+-- 							break
+-- 						end
+-- 					end
+-- 				end)
 
-			-- put it in the ready queue
-			child:ready()
+-- 			-- put it in the ready queue
+-- 			child:ready()
+-- 		end
+-- 	end)
+
+-- main:ready()
+-- main:join()
+
+
+local ctx = zmq.init(2)
+local channel_push = ctx:socket(zmq.PUSH)
+channel_push:bind("tcp://localhost:5555")
+
+-- local msg_id = 1
+-- while true do
+-- s:send(tostring(msg_id))
+-- msg_id = msg_id + 1
+-- end
+
+local channel_sub = ctx:socket(zmq.SUB)
+channel_sub:setopt(zmq.SUBSCRIBE, "")
+channel_sub:connect("tcp://localhost:5556")
+
+
+-- while true do
+-- 	local msg = s:recv()
+-- 	local msg_id = tonumber(msg)
+-- 	if math.mod(msg_id, 10000) == 0 then print(msg_id) end
+-- end
+
+
+-- local function echoHandler(skt)
+--   skt = copas.wrap(skt)
+--   while true do
+--     local data = skt:receive()
+--     if data == "quit" then
+--       break
+--     end
+--     skt:send(data)
+--   end
+-- end
+
+
+-- copas.loop()
+
+-- while true do
+-- 	copas.step()
+-- 	-- processing for other events from your system here
+-- end
+
+local cb_from_http  = function (skt)
+	skt = copas.wrap(skt)
+	while true do
+		local data = skt:receive()
+		print('received', data)
+
+		if data == "quit" then
+			break
 		end
-	end)
+		skt:send(data)
+	end
+end
 
-main:ready()
-main:join()
+
+local server_socket = socket.bind("localhost", 20000)
+copas.addserver(server_socket, cb_from_http)
+
+while true do
+	copas.step()
+	-- processing for other events from your system here
+end
+
+-- -- add the main lgserver request to poll
+-- -- conn.channel_req is the socket pull from lgserver
+-- poller:add(channel_sub, zmq.POLLIN, cb_from_handler)
+-- poller:add(server_socket, zmq.POLLIN, cb_from_http)
+
+
+-- -- start the main loop
+-- poller:start()
 
