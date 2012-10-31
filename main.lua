@@ -182,7 +182,7 @@ function feedfile(client, req)
 
 			file:close()
 		end
-		client:close()
+		--client:close()
 	end)
 
 	f1:ready()
@@ -243,44 +243,47 @@ function serviceDispatcher(client, req)
 end
 
 
-local main = luv.fiber.create(function()
-   local server = luv.net.tcp()
-   --server:bind("127.0.0.1", 8080)
-   server:bind("0.0.0.0", 8080)
-   server:listen(10000)
+local main = luv.fiber.create(
+	function()
+		local server = luv.net.tcp()
+		--server:bind("127.0.0.1", 8080)
+		server:bind("0.0.0.0", 8080)
+		server:listen(100)
 
-   while true do
-      local client = luv.net.tcp()
-      server:accept(client)
+		while true do
+			local client = luv.net.tcp()
+			server:accept(client)
 
-      local child = luv.fiber.create(function()
-       --  while true do
-            local got, reqstr = client:read()
-            if got then
-		-- print(reqstr)
-		local req = {headers={}, data={}}
-		local parser = init_parser(req)
-            	local bytes_read = parser:execute(reqstr)
-		if bytes_read > 0 then
-			local peer_t = client:getpeername()
-			-- add conn_id using peer port
-			req['conn_id'] = peer_t.port
-			req['method'] = parser:method()
-			req['version'] = parser:version()
-			
-			serviceDispatcher(client, req)
+			local child = luv.fiber.create(
+				function()
+					while true do
+						local got, reqstr = client:read()
+						if got then
+							-- print(reqstr)
+							local req = {headers={}, data={}}
+							local parser = init_parser(req)
+							local bytes_read = parser:execute(reqstr)
+							if bytes_read > 0 then
+								local peer_t = client:getpeername()
+								-- add conn_id using peer port
+								req['conn_id'] = peer_t.port
+								req['method'] = parser:method()
+								req['version'] = parser:version()
+								
+								serviceDispatcher(client, req)
+								--client:close()
+							end
+						else
+							client:close()
+							break
+						end
+					end
+				end)
+
+			-- put it in the ready queue
+			child:ready()
 		end
-            else
-		client:close()
-		--break
-            end
-         --end
-      end)
-
-      -- put it in the ready queue
-      child:ready()
-   end
-end)
+	end)
 
 main:ready()
 main:join()
