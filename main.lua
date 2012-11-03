@@ -181,7 +181,7 @@ function init_parser(req)
 	end
 	
 	function cb.on_message_complete()
-		print('http parser complete')
+--		print('http parser complete')
 		req['method'] = parser:method()
 		req['version'] = parser:version()
 
