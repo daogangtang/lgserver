@@ -293,19 +293,95 @@ end
 -- main:join()
 
 
-local ctx = zmq.init(2)
+local ctx = zmq.init()
 local channel_push = ctx:socket(zmq.PUSH)
-channel_push:bind("tcp://localhost:5555")
+channel_push:connect("tcp://localhost:5555")
 
--- local msg_id = 1
+local channel_pull = ctx:socket(zmq.PULL)
+channel_pull:bind("tcp://lo:5556")
+
+
+
+-- copas.loop()
+
 -- while true do
--- s:send(tostring(msg_id))
--- msg_id = msg_id + 1
+-- 	copas.step()
+-- 	-- processing for other events from your system here
 -- end
 
-local channel_sub = ctx:socket(zmq.SUB)
-channel_sub:setopt(zmq.SUBSCRIBE, "")
-channel_sub:connect("tcp://localhost:5556")
+-- skt: tcp connection to browser
+local cb_from_http = function (skt)
+	skt = copas.wrap(skt)
+	while true do
+		local data = skt:receive()
+--		print('received, ', data)
+
+		local req = {headers={}, data={}}
+		local parser = init_parser(req)
+		local bytes_read = parser:execute(reqstr)
+		if bytes_read > 0 then
+			serviceDispatcher(client, req)
+		end
+
+
+		-- send to handler
+		channel_push:send(data)
+		
+		local data, err
+		repeat
+			-- use noblock zmq to switch to other coroutines
+			data, err = channel_pull:recv(zmq.NOBLOCK)
+			if not data then
+				if err == 'timeout' then
+					print('wait....')
+					-- switch
+					skt:next()
+					-- coroutine.yield()
+					--require('posix').sleep(1)
+				else
+					error("socket recv error:" .. err)
+				end
+			end
+		until data
+
+		-- local more = src:getopt(zmq.RCVMORE) > 0
+		-- dst:send(data,more and zmq.SNDMORE or 0)
+		print(data)
+		
+		skt:send(data)
+	end
+end
+
+
+local server_socket = socket.bind("localhost", 8080)
+copas.addserver(server_socket, cb_from_http)
+
+while true do
+	copas.step()
+	-- processing for other events from your system here
+end
+
+
+
+
+
+
+
+
+
+-- local channel_sub = ctx:socket(zmq.SUB)
+-- channel_sub:setopt(zmq.SUBSCRIBE, "")
+-- channel_sub:connect("tcp://localhost:5556")
+
+
+-- -- add the main lgserver request to poll
+-- -- conn.channel_req is the socket pull from lgserver
+-- poller:add(channel_sub, zmq.POLLIN, cb_from_handler)
+-- poller:add(server_socket, zmq.POLLIN, cb_from_http)
+
+
+-- -- start the main loop
+-- poller:start()
 
 
 -- while true do
@@ -313,7 +389,6 @@ channel_sub:connect("tcp://localhost:5556")
 -- 	local msg_id = tonumber(msg)
 -- 	if math.mod(msg_id, 10000) == 0 then print(msg_id) end
 -- end
-
 
 -- local function echoHandler(skt)
 --   skt = copas.wrap(skt)
@@ -326,42 +401,4 @@ channel_sub:connect("tcp://localhost:5556")
 --   end
 -- end
 
-
--- copas.loop()
-
--- while true do
--- 	copas.step()
--- 	-- processing for other events from your system here
--- end
-
-local cb_from_http  = function (skt)
-	skt = copas.wrap(skt)
-	while true do
-		local data = skt:receive()
-		print('received', data)
-
-		if data == "quit" then
-			break
-		end
-		skt:send(data)
-	end
-end
-
-
-local server_socket = socket.bind("localhost", 20000)
-copas.addserver(server_socket, cb_from_http)
-
-while true do
-	copas.step()
-	-- processing for other events from your system here
-end
-
--- -- add the main lgserver request to poll
--- -- conn.channel_req is the socket pull from lgserver
--- poller:add(channel_sub, zmq.POLLIN, cb_from_handler)
--- poller:add(server_socket, zmq.POLLIN, cb_from_http)
-
-
--- -- start the main loop
--- poller:start()
 
