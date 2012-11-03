@@ -15,6 +15,9 @@ local config = allconfig.servers[1]
 local host = config.hosts[1]
 local routes = config.hosts[1].routes
 
+
+local CONNECTION_DICT = {}
+
 local patterns = {}
 for pattern, handle_t in pairs(routes) do
 	table.insert(patterns, pattern)
@@ -78,40 +81,63 @@ local function parse_path_query_fragment(uri)
 end
 
 function init_parser(req)
-   local cur	= req
-   local cb     = {}
+	local cur	= req
+	local cb    = {}
 
-   function cb.on_message_begin()
---	cur = {headers = {}, data={}}
-   end
+	function cb.on_message_begin()
+		--	cur = {headers = {}, data={}}
+	end
 
-   function cb.on_url(url)
-	print(os.date("%Y-%m-%d %H:%M:%S", os.time()), 'request ', url)
-	cur.url = url
-	cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
-   end
+	function cb.on_url(url)
+		print(os.date("%Y-%m-%d %H:%M:%S", os.time()), 'request ', url)
+		cur.url = url
+		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
+	end
 
-   function cb.on_header(field, value)
-       cur.headers[field] = value
-   end
+	function cb.on_header(field, value)
+		cur.headers[field] = value
+	end
 
-   function cb.on_body(body)
---	if ( nil == cur.body ) then
---		cur.body = {}
---	end
-	cur.body = body
-   end
-   
-   function cb.on_message_complete()
-	--table.remove(reqs)
-	--table.insert(reqs, cur)
---	req = cur
---	cur = {headers = {}, data={}}
-   end
+	function cb.on_body(body)
+		cur.body = body
+	end
+	
+	function cb.on_message_complete()
+		req['method'] = parser:method()
+		req['version'] = parser:version()
+	end
 
-   return lhp.request(cb)
+	return lhp.request(cb)
 end
 
+
+
+local makeUniKey = function ()
+	math.randomseed(os.time())
+	-- key is 6 length
+	local key = math.random(100000, 999999)
+	return tostring(key)
+end
+
+
+local recordConnection = function (client)
+	local key
+	-- select a new key
+	while true do
+		key = makeUniKey()
+		if not CONNECTION_DICT[key] then break end
+	end
+
+	CONNECTION_DICT[key] = client
+	return key
+end
+
+local cleanConnection = function (key, client)
+	if CONNECTION_DICT[key] == client then
+		CONNECTION_DICT[key] = nil
+		client:close()
+	end
+end
 
 
 function findtype(req)
@@ -144,7 +170,7 @@ function regularPath(path)
 end
 
 function feedfile(client, req)
-	local f1 = luv.fiber.create(function()
+
 		local path, err = regularPath(req.path)
 		if not path then
 			print(err)
@@ -174,72 +200,64 @@ function feedfile(client, req)
 				['Last-Modified'] = file_t.mtime,
 				['Cache-Control'] = 'max-age='..host['max-age']
 			})
-			client:write(res)
-			while true do
-				local nread, content = file:read(4096)	
-				if nread then
-					client:write(content)
-				else
-					break
-				end
+		client:write(res)
+		while true do
+			local nread, content = file:read(4096)	
+			-- print(nread, content)
+			-- if no data read, nread is 0, not nil
+			if nread > 0 then
+				client:write(content)
+			else
+				break
 			end
 
-			file:close()
 		end
-		--client:close()
-	end)
 
-	f1:ready()
+			file:close()
+	end
+	
+	-- here, we use one connection to serve one file
+	cleanConnection(req.meta.conn_id, client)
 end
 
--- local zmq = luv.zmq.create(1)
--- local channel_push
-
--- if config.hosts[1].routes['/'].send_spec then
--- 	channel_push = zmq:socket(luv.zmq.PUSH)
--- 	channel_push:bind(config.hosts[1].routes['/'].send_spec)
--- end
-
--- local function sendPushZmqMsg( msg )
--- 	local f = luv.fiber.create(function ()
--- 		channel_push:send(msg)
--- 	end)
-	
--- 	f:ready()
--- end
-
--- local channel_pull
--- if config.hosts[1].routes['/'].recv_spec then
--- 	channel_pull = zmq:socket(luv.zmq.PULL)
--- 	channel_pull:connect(config.hosts[1].routes['/'].recv_spec)
--- end
 
 
--- local function receivePullZmqMsg()
--- 	local msg = channel_pull:recv()
--- 	return cmsgpack.unpack(msg)
--- 	-- return msg
--- end
-
+local handlerProcessing = function (req)
+	print('in handler....')
+	sendPushZmqMsg(cmsgpack.pack(req))
+	-- res is the response string from handler
+	local res = receivePullZmqMsg()
+	print('res', res)
+	-- return to a single client connection
+	if #res.conns > 0 then
+		for i, conn_id in pairs(res.conns) do
+			-- need to check client connection is ok now?
+			if CONNECTION_DICT[conn_id] then
+				local client = CONNECTION_DICT[conn_id]
+				client:write(http_response(res.data, res.code, res.status, res.headers))
+				
+				-- here, we may close some connections in one coroutine, 
+				-- which can only cotains another connection
+				cleanConnection(conn_id, client)
+			end
+		end
+	end
+end
 
 function serviceDispatcher(client, req)
 	local pattern, handle_t = findHandle(req)
+	print('----<>', pattern, handle_t)
 	if pattern then
 		if handle_t.type == 'dir' then
 			feedfile(client, req)
 			
 		elseif handle_t.type == 'handler' then
-			sendPushZmqMsg(cmsgpack.pack(req))
-			-- res is the response string from handler
-			local res = receivePullZmqMsg()
-			--client:write(res.data)
-			-- for i, v in pairs(res) do print(i, v) end
-			-- client:write(http_response(luv.codec.encode(res), 200, 'OK'))
-			client:write(http_response(res.data, res.code, res.status, res.headers))
+			print('....<')
+			handlerProcessing(client, req)
 			
 		end
 	else
-		root_dir(req.path, '404 Not Found.')
+		-- root_dir(req.path, '404 Not Found.')
 		client:write(http_response('Not Found', 404, 'Not Found', {
 			['content-type'] = 'text/plain'
 		}))
@@ -247,51 +265,11 @@ function serviceDispatcher(client, req)
 end
 
 
--- local main = luv.fiber.create(
--- 	function()
--- 		local server = luv.net.tcp()
--- 		--server:bind("127.0.0.1", 8080)
--- 		server:bind("0.0.0.0", 8080)
--- 		server:listen(100)
-
--- 		while true do
--- 			local client = luv.net.tcp()
--- 			server:accept(client)
-
--- 			local child = luv.fiber.create(
--- 				function()
--- 					while true do
--- 						local got, reqstr = client:read()
--- 						if got then
--- 							-- print(reqstr)
--- 							local req = {headers={}, data={}}
--- 							local parser = init_parser(req)
--- 							local bytes_read = parser:execute(reqstr)
--- 							if bytes_read > 0 then
--- 								local peer_t = client:getpeername()
--- 								-- add conn_id using peer port
--- 								req['conn_id'] = peer_t.port
--- 								req['method'] = parser:method()
--- 								req['version'] = parser:version()
-								
--- 								serviceDispatcher(client, req)
--- 								--client:close()
--- 							end
--- 						else
--- 							client:close()
--- 							break
--- 						end
--- 					end
--- 				end)
-
--- 			-- put it in the ready queue
--- 			child:ready()
--- 		end
--- 	end)
-
--- main:ready()
--- main:join()
-
+-- ==============================================================
+--
+--
+-- 
+-- ==============================================================
 
 local ctx = zmq.init()
 local channel_push = ctx:socket(zmq.PUSH)
@@ -300,22 +278,36 @@ channel_push:connect("tcp://localhost:5555")
 local channel_pull = ctx:socket(zmq.PULL)
 channel_pull:bind("tcp://lo:5556")
 
-
-
--- copas.loop()
-
--- while true do
--- 	copas.step()
--- 	-- processing for other events from your system here
+-- if config.hosts[1].routes['/'].recv_spec then
+-- 	channel_pull = zmq:socket(luv.zmq.PULL)
+-- 	channel_pull:bind(config.hosts[1].routes['/'].recv_spec)
 -- end
 
+local function sendPushZmqMsg( msg )
+	channel_push:send(msg)
+end
+
+-- if config.hosts[1].routes['/'].send_spec then
+-- 	channel_push = zmq:socket(luv.zmq.PUSH)
+-- 	channel_push:connect(config.hosts[1].routes['/'].send_spec)
+-- end
+
+local function receivePullZmqMsg()
+	local msg = channel_pull:recv()
+	return cmsgpack.unpack(msg)
+	-- return msg
+end
+
+
+
 -- skt: tcp connection to browser
-local cb_from_http = function (skt)
-	skt = copas.wrap(skt)
+local cb_from_http = function (client)
+	client = copas.wrap(client)
 	while true do
-		local data = skt:receive()
+		local data = client:receive()
 --		print('received, ', data)
 
+		
 		local req = {headers={}, data={}}
 		local parser = init_parser(req)
 		local bytes_read = parser:execute(reqstr)
@@ -325,7 +317,7 @@ local cb_from_http = function (skt)
 
 
 		-- send to handler
-		channel_push:send(data)
+		--channel_push:send(data)
 		
 		local data, err
 		repeat
@@ -360,45 +352,6 @@ while true do
 	copas.step()
 	-- processing for other events from your system here
 end
-
-
-
-
-
-
-
-
-
--- local channel_sub = ctx:socket(zmq.SUB)
--- channel_sub:setopt(zmq.SUBSCRIBE, "")
--- channel_sub:connect("tcp://localhost:5556")
-
-
--- -- add the main lgserver request to poll
--- -- conn.channel_req is the socket pull from lgserver
--- poller:add(channel_sub, zmq.POLLIN, cb_from_handler)
--- poller:add(server_socket, zmq.POLLIN, cb_from_http)
-
-
--- -- start the main loop
--- poller:start()
-
-
--- while true do
--- 	local msg = s:recv()
--- 	local msg_id = tonumber(msg)
--- 	if math.mod(msg_id, 10000) == 0 then print(msg_id) end
--- end
-
--- local function echoHandler(skt)
---   skt = copas.wrap(skt)
---   while true do
---     local data = skt:receive()
---     if data == "quit" then
---       break
---     end
---     skt:send(data)
---   end
--- end
+-- copas.loop()
 
 
