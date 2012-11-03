@@ -18,6 +18,68 @@ local routes = config.hosts[1].routes
 
 local CONNECTION_DICT = {}
 
+
+
+
+
+
+-- ==============================================================
+--
+--
+-- 
+-- ==============================================================
+
+local ctx = zmq.init()
+local channel_push = ctx:socket(zmq.PUSH)
+channel_push:connect("tcp://localhost:5555")
+
+local channel_pull = ctx:socket(zmq.PULL)
+channel_pull:bind("tcp://lo:5556")
+
+-- if config.hosts[1].routes['/'].recv_spec then
+-- 	channel_pull = zmq:socket(luv.zmq.PULL)
+-- 	channel_pull:bind(config.hosts[1].routes['/'].recv_spec)
+-- end
+
+local function sendPushZmqMsg( msg )
+	channel_push:send(msg)
+end
+
+-- if config.hosts[1].routes['/'].send_spec then
+-- 	channel_push = zmq:socket(luv.zmq.PUSH)
+-- 	channel_push:connect(config.hosts[1].routes['/'].send_spec)
+-- end
+
+local function receivePullZmqMsg()
+	local msg, err
+	repeat
+		-- use noblock zmq to switch to other coroutines
+		msg, err = channel_pull:recv(zmq.NOBLOCK)
+		if not msg then
+			if err == 'timeout' then
+				print('wait....')
+				-- switch
+				skt:next()
+			else
+				error("socket recv error:" .. err)
+			end
+		end
+	until msg
+
+	-- local more = src:getopt(zmq.RCVMORE) > 0
+	-- dst:send(data,more and zmq.SNDMORE or 0)
+	print(msg)
+
+	return cmsgpack.unpack(data)
+end
+
+-- client is copas object
+local function sendData (client, data)
+	client:send(data)
+end
+
+
+-- ======================================================================
 local patterns = {}
 for pattern, handle_t in pairs(routes) do
 	table.insert(patterns, pattern)
@@ -37,6 +99,7 @@ function findHandle(req)
 end
 
 
+-- ========================================================================
 local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
 
 local function http_response(body, code, status, headers)
@@ -174,8 +237,8 @@ function feedfile(client, req)
 		local path, err = regularPath(req.path)
 		if not path then
 			print(err)
-			client:write(http_response('Forbidden', 403, 'Forbidden'))
-			client:close()
+			sendData(client, http_response('Forbidden', 403, 'Forbidden'))
+			-- need to close
 			return false
 		elseif path == config.root_dir then 
 			path = config.root_dir..'index.html' 
@@ -186,11 +249,11 @@ function feedfile(client, req)
 		--print(file_t)
 		local last_modified_time = tonumber(req.headers['If-Modified-Since'])
 		if not file_t or file_t.is_directory then
-			client:write(http_response('Not Found', 404, 'Not Found', {
+			sendData(client, http_response('Not Found', 404, 'Not Found', {
 				['content-type'] = 'text/plain'
 			}))
 		elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
-			client:write(http_response('Not Changed', 304, 'Not Changed'))
+			sendData(client, http_response('Not Changed', 304, 'Not Changed'))
 		else
 			local size = 0
 			if file_t then size = file_t.size end
@@ -200,20 +263,20 @@ function feedfile(client, req)
 				['Last-Modified'] = file_t.mtime,
 				['Cache-Control'] = 'max-age='..host['max-age']
 			})
-		client:write(res)
+		sendData(client, res)
 		while true do
 			local nread, content = file:read(4096)	
 			-- print(nread, content)
 			-- if no data read, nread is 0, not nil
 			if nread > 0 then
-				client:write(content)
+				sendData(client, content)
 			else
 				break
 			end
 
 		end
 
-			file:close()
+		file:close()
 	end
 	
 	-- here, we use one connection to serve one file
@@ -223,18 +286,18 @@ end
 
 
 local handlerProcessing = function (req)
+
 	print('in handler....')
 	sendPushZmqMsg(cmsgpack.pack(req))
 	-- res is the response string from handler
 	local res = receivePullZmqMsg()
-	print('res', res)
 	-- return to a single client connection
-	if #res.conns > 0 then
+	if res and res.conns and #res.conns > 0 then
 		for i, conn_id in pairs(res.conns) do
 			-- need to check client connection is ok now?
 			if CONNECTION_DICT[conn_id] then
 				local client = CONNECTION_DICT[conn_id]
-				client:write(http_response(res.data, res.code, res.status, res.headers))
+				sendData(client, http_response(res.data, res.code, res.status, res.headers))
 				
 				-- here, we may close some connections in one coroutine, 
 				-- which can only cotains another connection
@@ -246,67 +309,34 @@ end
 
 function serviceDispatcher(client, req)
 	local pattern, handle_t = findHandle(req)
-	print('----<>', pattern, handle_t)
 	if pattern then
 		if handle_t.type == 'dir' then
+
 			feedfile(client, req)
-			
+
 		elseif handle_t.type == 'handler' then
-			print('....<')
+
 			handlerProcessing(client, req)
-			
+
 		end
 	else
 		-- root_dir(req.path, '404 Not Found.')
-		client:write(http_response('Not Found', 404, 'Not Found', {
+		sendData(client, http_response('Not Found', 404, 'Not Found', {
 			['content-type'] = 'text/plain'
 		}))
 	end
 end
 
 
--- ==============================================================
---
---
--- 
--- ==============================================================
 
-local ctx = zmq.init()
-local channel_push = ctx:socket(zmq.PUSH)
-channel_push:connect("tcp://localhost:5555")
+-- client_skt: tcp connection to browser
 
-local channel_pull = ctx:socket(zmq.PULL)
-channel_pull:bind("tcp://lo:5556")
-
--- if config.hosts[1].routes['/'].recv_spec then
--- 	channel_pull = zmq:socket(luv.zmq.PULL)
--- 	channel_pull:bind(config.hosts[1].routes['/'].recv_spec)
--- end
-
-local function sendPushZmqMsg( msg )
-	channel_push:send(msg)
-end
-
--- if config.hosts[1].routes['/'].send_spec then
--- 	channel_push = zmq:socket(luv.zmq.PUSH)
--- 	channel_push:connect(config.hosts[1].routes['/'].send_spec)
--- end
-
-local function receivePullZmqMsg()
-	local msg = channel_pull:recv()
-	return cmsgpack.unpack(msg)
-	-- return msg
-end
-
-
-
--- skt: tcp connection to browser
-local cb_from_http = function (client)
-	client = copas.wrap(client)
+local cb_from_http = function (client_skt)
+	-- client is copas wrapped object
+	local client = copas.wrap(client_skt)
 	while true do
 		local data = client:receive()
---		print('received, ', data)
-
+		print('received, ', data)
 		
 		local req = {headers={}, data={}}
 		local parser = init_parser(req)
@@ -315,32 +345,8 @@ local cb_from_http = function (client)
 			serviceDispatcher(client, req)
 		end
 
-
-		-- send to handler
-		--channel_push:send(data)
 		
-		local data, err
-		repeat
-			-- use noblock zmq to switch to other coroutines
-			data, err = channel_pull:recv(zmq.NOBLOCK)
-			if not data then
-				if err == 'timeout' then
-					print('wait....')
-					-- switch
-					skt:next()
-					-- coroutine.yield()
-					--require('posix').sleep(1)
-				else
-					error("socket recv error:" .. err)
-				end
-			end
-		until data
-
-		-- local more = src:getopt(zmq.RCVMORE) > 0
-		-- dst:send(data,more and zmq.SNDMORE or 0)
-		print(data)
-		
-		skt:send(data)
+		-- skt:send(data)
 	end
 end
 
