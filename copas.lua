@@ -264,11 +264,14 @@ local _skt_mt = {__index = {
                            end,
 
                    settimeout = function (self,time)
-                                  self.timeout=time
-                                  return
-                                end,
+					   self.timeout=time
+					   return
+				   end,
 				   next = function (self)
-					       coroutine.yield(self.socket, _reading)
+					   --coroutine.yield(self.socket, _reading)
+					   if self.socket then
+					       coroutine.yield(self.socket, _writing)
+					   end
 				   end
                }}
 
