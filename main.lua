@@ -73,7 +73,7 @@ local function receivePullZmqMsg(client)
 		msg, err = channel_pull:recv(zmq.NOBLOCK)
 		if not msg then
 			if err == 'timeout' then
-				print('wait....')
+				-- print('wait....')
 				-- switch
 				client:next()
 			else
@@ -310,44 +310,38 @@ local handlerProcessing = function (client, req)
 	-- res is the response string from handler
 	local res = receivePullZmqMsg(client)
 	-- temporary test
-	--client:send(res)
-	client:send(http_response('Hello world!', res.code, res.status, res.headers))
-	print('return from zmq pull')
-	ptable(CONNECTION_DICT)
+	-- client:send(res)
+	-- client:send(http_response('Hello world!', res.code, res.status, res.headers))
+	-- cleanConnection(req.meta.conn_id, client)
+	-- print('return from zmq pull')
 
-	cleanConnection(req.meta.conn_id, client)
-	ptable(CONNECTION_DICT)
-	
-	-- -- return to a single client connection
-	-- if res then
-	-- 	p(res)
-	-- 	if res.conns and type(res.conns) == 'table' and #res.conns > 0 then
-	-- 		-- multi connections reples
-	-- 		for i, conn_id in pairs(res.conns) do
-	-- 			-- need to check client connection is ok now?
-	-- 			if CONNECTION_DICT[conn_id] then
-	-- 				local client = CONNECTION_DICT[conn_id]
-	-- 				sendData(client, http_response(res.data, res.code, res.status, res.headers))
+	-- return to a single client connection
+	if res then
+		if res.conns and type(res.conns) == 'table' and #res.conns > 0 then
+			-- multi connections reples
+			for i, conn_id in pairs(res.conns) do
+				-- need to check client connection is ok now?
+				if CONNECTION_DICT[conn_id] then
+					local client = CONNECTION_DICT[conn_id]
+					sendData(client, http_response(res.data, res.code, res.status, res.headers))
 					
-	-- 				-- here, we may close some connections in one coroutine, 
-	-- 				-- which can only cotains another connection
-	-- 				cleanConnection(conn_id, client)
-	-- 			end
-	-- 		end
-	-- 	else
-	-- 		-- single connection reply
-	-- 		local conn_id = res.extra.conn_id
-	-- 		print('conn_id', conn_id)
-	-- 		p(CONNECTION_DICT)
-	-- 		if CONNECTION_DICT[conn_id] then
-	-- 			local client = CONNECTION_DICT[conn_id]
-	-- 			sendData(client, http_response(res.data, res.code, res.status, res.headers))
+					-- here, we may close some connections in one coroutine, 
+					-- which can only cotains another connection
+					cleanConnection(conn_id, client)
+				end
+			end
+		else
+			-- single connection reply
+			local conn_id = res.extra.conn_id
+			if CONNECTION_DICT[conn_id] then
+				local client = CONNECTION_DICT[conn_id]
+				sendData(client, http_response(res.data, res.code, res.status, res.headers))
 				
-	-- 			--cleanConnection(conn_id, client)
-	-- 		end					
+				cleanConnection(conn_id, client)
+			end					
 			
-	-- 	end
-	-- end
+		end
+	end
 end
 
 function serviceDispatcher(client, req)
@@ -405,10 +399,11 @@ end
 local server_socket = socket.bind("localhost", 8080)
 copas.addserver(server_socket, cb_from_http)
 
-while true do
-	copas.step()
-	-- processing for other events from your system here
-end
--- copas.loop()
+-- while true do
+-- 	copas.step()
+-- 	-- processing for other events from your system here
+-- end
+
+copas.loop()
 
 
