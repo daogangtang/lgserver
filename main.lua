@@ -40,17 +40,10 @@ local CONNECTION_DICT = {}
 
 local ctx = zmq.init()
 local channel_push = ctx:socket(zmq.PUSH)
-channel_push:connect("tcp://localhost:1234")
--- channel_push:connect("tcp://127.0.0.1:1234")
+channel_push:bind("tcp://127.0.0.1:1234")
 
 local channel_pull = ctx:socket(zmq.PULL)
-channel_pull:bind("tcp://lo:1235")
--- channel_pull:bind("tcp://127.0.0.1:1235")
-
--- local channel_pull = ctx:socket(zmq.SUB)
--- channel_pull:setopt(zmq.SUBSCRIBE, "bbbb")
--- channel_pull:connect("tcp://localhost:1235")
-
+channel_pull:bind("tcp://127.0.0.1:1235")
 
 -- if config.hosts[1].routes['/'].recv_spec then
 -- 	channel_pull = zmq:socket(luv.zmq.PULL)
@@ -316,7 +309,7 @@ local handlerProcessing = function (client, req)
 	-- print('return from zmq pull')
 
 	-- return to a single client connection
-	if res then
+	if res and res.meta then
 		if res.conns and type(res.conns) == 'table' and #res.conns > 0 then
 			-- multi connections reples
 			for i, conn_id in pairs(res.conns) do
@@ -332,7 +325,8 @@ local handlerProcessing = function (client, req)
 			end
 		else
 			-- single connection reply
-			local conn_id = res.extra.conn_id
+			-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
+			local conn_id = res.meta.conn_id
 			if CONNECTION_DICT[conn_id] then
 				local client = CONNECTION_DICT[conn_id]
 				sendData(client, http_response(res.data, res.code, res.status, res.headers))
