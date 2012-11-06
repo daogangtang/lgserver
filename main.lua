@@ -15,42 +15,78 @@ p = fptable
 --p = utils.prettyPrint
 
 
-
+local config_file = arg[1] or './config.lua'
 
 -- load configurations
 local allconfig = {}
-setfenv(assert(loadfile('./config.lua')), setmetatable(allconfig, {__index=_G}))()
-local config = allconfig.servers[1]
-local host = config.hosts[1]
-local routes = config.hosts[1].routes
+setfenv(assert(loadfile(config_file)), setmetatable(allconfig, {__index=_G}))()
+
+-- we define: one server in one config file
+local SERVER = allconfig.server
 
 
 local CONNECTION_DICT = {}
-
-
-
-
-
-
+local CHANNEL_DICT = {}
 -- ==============================================================
---
---
 -- 
 -- ==============================================================
 
 local ctx = zmq.init()
-local channel_push = ctx:socket(zmq.PUSH)
-channel_push:bind("tcp://127.0.0.1:1234")
 
-local channel_pull = ctx:socket(zmq.PULL)
-channel_pull:bind("tcp://127.0.0.1:1235")
+
+local HOSTS = SERVER.hosts
+-- arrage hosts from longest to shorterest by matching hostname
+table.sort(HOSTS, function (a, b) return #(a.matching or '') > #(b.matching or '') end)
+
+for i, host in ipairs(HOSTS) do
+	local patterns = {}
+	for pattern, handle_t in pairs(host.routes) do
+		table.insert(patterns, pattern)
+	end
+	-- arrage patterns from longest to shorterest
+	table.sort(patterns, function (a, b) return #a > #b end)
+	host.patterns = patterns
+end
+
+-- walk through hosts
+for i, host in ipairs(HOSTS) do
+	-- walk through routes in each host
+	for pattern, processor in pairs(host.routes) do
+		if processor.type == 'handler' then
+			local send_spec = processor.send_spec
+			local recv_spec = processor.recv_spec
+			-- avoid duplicated bindings
+			if not CHANNEL_DICT[send_spec] and not CHANNEL_DICT[recv_spec] then
+				local channel_push = ctx:socket(zmq.PUSH)
+				channel_push:bind(processor.send_spec)
+				local channel_pull = ctx:socket(zmq.PULL)
+				channel_pull:bind(processor.recv_spec)
+				
+				-- record all zmq channels
+				CHANNEL_DICT[processor.send_spec] = channel_push
+				CHANNEL_DICT[processor.recv_spec] = channel_pull
+			end
+			end
+
+		elseif processor.type == 'dir' then
+
+		end
+	end
+end
+
+
+-- local channel_push = ctx:socket(zmq.PUSH)
+-- channel_push:bind("tcp://127.0.0.1:1234")
+
+-- local channel_pull = ctx:socket(zmq.PULL)
+-- channel_pull:bind("tcp://127.0.0.1:1235")
 
 -- if config.hosts[1].routes['/'].recv_spec then
 -- 	channel_pull = zmq:socket(luv.zmq.PULL)
 -- 	channel_pull:bind(config.hosts[1].routes['/'].recv_spec)
 -- end
 
-local function sendPushZmqMsg(client, msg)
+local function sendPushZmqMsg(channel_push, msg)
 	channel_push:send(msg)
 end
 
@@ -59,7 +95,7 @@ end
 -- 	channel_push:connect(config.hosts[1].routes['/'].send_spec)
 -- end
 
-local function receivePullZmqMsg(client)
+local function receivePullZmqMsg(channel_pull, client)
 	local msg, err
 	repeat
 		-- use noblock zmq to switch to other coroutines
@@ -88,18 +124,21 @@ end
 
 
 -- ======================================================================
-local patterns = {}
-for pattern, handle_t in pairs(routes) do
-	table.insert(patterns, pattern)
+local function findHost(req) 
+	local ask_host = req.host
+	for i, host in ipairs(HOSTS) do
+		if ask_host:match(host.matching..'$') then
+			return host
+		end
+	end
 end
--- arrage patterns from longest to shorterest
-table.sort(patterns, function (a, b) return #a > #b end)
 
-function findHandle(req)
+function findHandle(host, req)
+
 	local path = req.path:gsub('/+', '/')
-	for i, pattern in ipairs(patterns) do
+	for i, pattern in ipairs(host.patterns) do
 		if path:match('^'..pattern) then
-			return pattern, routes[pattern]
+			return pattern, host.routes[pattern]
 		end
 	end
 	
@@ -206,16 +245,24 @@ local recordConnection = function (client)
 	return key
 end
 
-local cleanConnection = function (key, client)
+local cleanConnection = function (key, client, channel_push)
 	if CONNECTION_DICT[key] == client then
 		CONNECTION_DICT[key] = nil
---		client.socket:close()
---		client = nil
+		client.socket:close()
+		
+		if channel_push then
+			-- send disconnect msg to bamboo handler
+			local disconnect_msg = {
+				type = 'disconnect',
+				conn_id = key
+			}
+			sendPushZmqMsg(channel_push, disconnect_msg)
+		end
 	end
 end
 
 
-function findtype(req)
+function findType(req)
 	local content_type
 	-- now req is the incoming request data
 	local ext = req.path:match('(%.%w+)$')
@@ -295,13 +342,17 @@ function feedfile(client, req)
 	cleanConnection(req.meta.conn_id, client)
 end
 
+local function findChannelsByProcessor (processor)
+	return CHANNEL_DICT[processor.send_spec], CHANNEL_DICT[processor.recv_spec]
+end
 
+local handlerProcessing = function (processor, client, req)
+	
+	local channel_push, channel_pull = findChannelsByProcessor(processor)
 
-local handlerProcessing = function (client, req)
-
-	sendPushZmqMsg(client, cmsgpack.pack(req))
+	sendPushZmqMsg(channel_push, cmsgpack.pack(req))
 	-- res is the response string from handler
-	local res = receivePullZmqMsg(client)
+	local res = receivePullZmqMsg(channel_pull, client)
 	-- temporary test
 	-- client:send(res)
 	-- client:send(http_response('Hello world!', res.code, res.status, res.headers))
@@ -320,7 +371,7 @@ local handlerProcessing = function (client, req)
 					
 					-- here, we may close some connections in one coroutine, 
 					-- which can only cotains another connection
-					cleanConnection(conn_id, client)
+					cleanConnection(conn_id, client, channel_push)
 				end
 			end
 		else
@@ -331,7 +382,7 @@ local handlerProcessing = function (client, req)
 				local client = CONNECTION_DICT[conn_id]
 				sendData(client, http_response(res.data, res.code, res.status, res.headers))
 				
-				cleanConnection(conn_id, client)
+				cleanConnection(conn_id, client, channel_push)
 			end					
 			
 		end
@@ -339,7 +390,8 @@ local handlerProcessing = function (client, req)
 end
 
 function serviceDispatcher(client, req)
-	local pattern, handle_t = findHandle(req)
+	local host = findHost(req)
+	local pattern, handle_t = findHandle(host, req)
 	if pattern then
 		if handle_t.type == 'dir' then
 
@@ -347,7 +399,7 @@ function serviceDispatcher(client, req)
 
 		elseif handle_t.type == 'handler' then
 
-			handlerProcessing(client, req)
+			handlerProcessing(handle_t, client, req)
 
 		end
 	else
