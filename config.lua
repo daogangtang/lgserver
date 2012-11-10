@@ -1,6 +1,6 @@
-static_mmshuxia = { type="dir", base='sites/mmsx/', index_file='index.html', default_ctype='text/html' }
+static_mmshuxia = { type="dir" }
 
-static_default = { type="dir", base='media/', index_file='index.html', default_ctype='text/html' }
+static_default = { type="dir" }
 
 
 handler_mmshuxia = { type="handler", 
@@ -11,27 +11,28 @@ handler_mmshuxia = { type="handler",
 		recv_ident=''}
 
 
-server1 = {
+server = {
     name="server1",
-    root_dir = "/home/xen/workspace/lgserver/tmp/",
     bind_addr = "0.0.0.0",
     port=80,
     access_log="logs/access.log",
     error_log="logs/error.log",
     default_host="mmshuxia.com",
     hosts = { 
-        {       name="mmshuxia.com",
-		matching="mmshuxia.com",
-		['max-age'] = 60,
-                routes={
-	--		['/'] = static_mmshuxia,
-			['/'] = handler_mmshuxia,
-			['/media/'] = static_mmshuxia,
-                }
+        {       
+			name="mmshuxia.com",
+			matching="mmshuxia.com",
+			root_dir = "/home/xen/workspace/lgserver/tmp/",
+
+			['max-age'] = 60,
+			routes={
+				--		['/'] = static_mmshuxia,
+				['/'] = handler_mmshuxia,
+				['/media/'] = static_mmshuxia,
+			}
         },
 
 
     }
 }
 
-servers = {server1}

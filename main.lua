@@ -272,12 +272,12 @@ function findType(req)
 	req['content-type'] = content_type or 'text/plain'
 end
 
-function regularPath(path)
+function regularPath(host, path)
 	local orig_path = path
-	path = config.root_dir..path
+	path = host.root_dir..path
 	path = path:gsub('/+', '/') 
 	
-	local l = #config.root_dir
+	local l = #host.root_dir
 	local count = 0
 	while l do
 		l = path:find('/', l+1)
@@ -290,16 +290,16 @@ function regularPath(path)
 	return path
 end
 
-function feedfile(client, req)
+function feedfile(host, client, req)
 
-		local path, err = regularPath(req.path)
+		local path, err = regularPath(host, req.path)
 		if not path then
 			print(err)
 			sendData(client, http_response('Forbidden', 403, 'Forbidden'))
 			-- need to close
 			return false
-		elseif path == config.root_dir then 
-			path = config.root_dir..'index.html' 
+		elseif path == host.root_dir then 
+			path = host.root_dir..'index.html' 
 		end
 
 		local file_t = posix.stat(path)
@@ -395,7 +395,7 @@ function serviceDispatcher(client, req)
 	if pattern then
 		if handle_t.type == 'dir' then
 
-			feedfile(client, req)
+			feedfile(host, client, req)
 
 		elseif handle_t.type == 'handler' then
 
