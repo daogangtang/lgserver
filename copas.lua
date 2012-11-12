@@ -64,7 +64,7 @@ _DESCRIPTION = "Coroutine Oriented Portable Asynchronous Services"
 _VERSION     = "Copas 1.1.7"
 
 -- Close the socket associated with the current connection after the handler finishes
-autoclose = true
+autoclose = false
 
 -------------------------------------------------------------------------------
 -- Simple set implementation based on LuaSocket's tinyirc.lua example

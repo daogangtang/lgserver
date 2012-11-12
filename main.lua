@@ -86,7 +86,6 @@ local function receivePullZmqMsg(channel_pull, client)
 			end
 		end
 	until msg
-
 	-- local more = src:getopt(zmq.RCVMORE) > 0
 	-- dst:send(data,more and zmq.SNDMORE or 0)
 
@@ -95,7 +94,9 @@ end
 
 -- client is copas object
 local function sendData (client, data)
-	client:send(data)
+	if client then
+		client:send(data)
+	end
 end
 
 
@@ -166,7 +167,6 @@ local function parse_path_query_fragment(uri)
     return path or '/', query, fragment
 end
 
-local parser;
 function init_parser(req)
 	local cur	= req
 	local cb    = {}
@@ -175,7 +175,7 @@ function init_parser(req)
 	end
 
 	function cb.on_url(url)
-		print(os.date("%Y-%m-%d %H:%M:%S", os.time()), 'request ', url)
+		print(os.date("%Y-%m-%d %H:%M:%S", os.time()), req.meta.conn_id, url)
 		cur.url = url
 		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
 	end
@@ -189,9 +189,9 @@ function init_parser(req)
 	end
 	
 	function cb.on_message_complete()
-		print('http parser complete')
-		req['method'] = parser:method()
-		req['version'] = parser:version()
+		-- print('http parser complete')
+--		req['method'] = parser:method()
+--		req['version'] = parser:version()
 
 		req.meta.completed = true
 	end
@@ -209,7 +209,7 @@ local makeUniKey = function ()
 end
 
 
-local recordConnection = function (client)
+local recordConnection = function (client, req)
 	local key
 	-- select a new key
 	while true do
@@ -217,15 +217,17 @@ local recordConnection = function (client)
 		if not CONNECTION_DICT[key] then break end
 	end
 
-	CONNECTION_DICT[key] = client
+	req.meta.conn_id = key
+	CONNECTION_DICT[key] = {client, req}
 	return key
 end
 
 local cleanConnection = function (key, client, channel_push)
-	if CONNECTION_DICT[key] == client then
+	if CONNECTION_DICT[key][1] == client then
 		CONNECTION_DICT[key] = nil
 		client.socket:close()
-		
+		client = nil
+
 		if channel_push then
 			-- send disconnect msg to bamboo handler
 			local disconnect_msg = {
@@ -267,7 +269,6 @@ function regularPath(host, path)
 end
 
 function feedfile(host, client, req)
-	print('enter feedfile')
 		local path, err = regularPath(host, req.path)
 		if not path then
 			print(err)
@@ -310,7 +311,6 @@ function feedfile(host, client, req)
 					break
 				end
 			end
-			print('ready to close')
 			posix.close(file)
 	end
 	
@@ -335,48 +335,48 @@ local handlerProcessing = function (processor, client, req)
 	-- cleanConnection(req.meta.conn_id, client)
 	-- print('return from zmq pull')
 
+	if not res.meta or not res.conns then return end
+
 	-- return to a single client connection
-	if res and res.meta then
-		if res.conns and type(res.conns) == 'table' and #res.conns > 0 then
-			-- multi connections reples
-			for i, conn_id in pairs(res.conns) do
-				-- need to check client connection is ok now?
-				if CONNECTION_DICT[conn_id] then
-					local client = CONNECTION_DICT[conn_id]
-					sendData(client, http_response(res.data, res.code, res.status, res.headers))
-					
-					-- here, we may close some connections in one coroutine, 
-					-- which can only cotains another connection
-					cleanConnection(conn_id, client, channel_push)
-				end
-			end
-		else
-			-- single connection reply
-			-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
-			local conn_id = res.meta.conn_id
+	-- protocol define: res.conns must be a table
+	if #res.conns > 0 then
+		-- multi connections reples
+		for i, conn_id in pairs(res.conns) do
+			-- need to check client connection is ok now?
 			if CONNECTION_DICT[conn_id] then
-				local client = CONNECTION_DICT[conn_id]
+				local client = CONNECTION_DICT[conn_id][1]
 				sendData(client, http_response(res.data, res.code, res.status, res.headers))
 				
+				-- here, we may close some connections in one coroutine, 
+				-- which can only cotains another connection
 				cleanConnection(conn_id, client, channel_push)
-			end					
-			
+			end
 		end
+	else
+		-- single connection reply
+		-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
+		local conn_id = res.meta.conn_id
+		if CONNECTION_DICT[conn_id] then
+			local client = CONNECTION_DICT[conn_id][1]
+			sendData(client, http_response(res.data, res.code, res.status, res.headers))
+			
+			cleanConnection(conn_id, client, channel_push)
+		end					
+		
 	end
 end
 
-function serviceDispatcher(client, req)
+function serviceDispatcher(key)
+	local client = CONNECTION_DICT[key][1]
+	local req = CONNECTION_DICT[key][2]
 	--local host = findHost(req)
 	local host = HOSTS[1]
 	local pattern, handle_t = findHandle(host, req)
-	print(pattern, handle_t)
 	if pattern then
 		if handle_t.type == 'dir' then
-			print(host, client, req)
 			feedfile(host, client, req)
 
 		elseif handle_t.type == 'handler' then
-
 			handlerProcessing(handle_t, client, req)
 
 		end
@@ -393,10 +393,11 @@ end
 local cb_from_http = function (client_skt)
 	-- client is copas wrapped object
 	local client = copas.wrap(client_skt)
-	local key = recordConnection(client)
-	local req = {headers={}, data={}, meta={conn_id=key, completed = false}}
-	parser = init_parser(req)
+	local req = {headers={}, data={}, meta={completed = false}}
+	local key = recordConnection(client, req)
+	local parser = init_parser(req)
 	
+
 	-- read all http strings
 	while true do
 		-- read one line each time
@@ -409,7 +410,10 @@ local cb_from_http = function (client_skt)
 	end
 
 	if req.meta.completed then
-		serviceDispatcher(client, req)
+		req['method'] = parser:method()
+		req['version'] = parser:version()
+
+		serviceDispatcher(key)
 	else
 		client:send('invalid http request')
 	end
