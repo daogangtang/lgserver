@@ -8,7 +8,6 @@ local utils = require 'utils'
 local posix = require 'posix'
 
 local zmq = require"zmq"
---local poller = require('zmq.poller')(64)
 
 require 'lglib'
 p = fptable
@@ -28,11 +27,7 @@ local SERVER = allconfig.server
 local CONNECTION_DICT = {}
 local CHANNEL_DICT = {}
 -- ==============================================================
--- 
--- ==============================================================
-
-local ctx = zmq.init()
-
+local ctx = zmq.init(1)
 
 local HOSTS = SERVER.hosts
 -- arrage hosts from longest to shorterest by matching hostname
@@ -66,34 +61,15 @@ for i, host in ipairs(HOSTS) do
 				CHANNEL_DICT[processor.send_spec] = channel_push
 				CHANNEL_DICT[processor.recv_spec] = channel_pull
 			end
-			end
-
-		elseif processor.type == 'dir' then
-
+		--elseif processor.type == 'dir' then
 		end
+
 	end
 end
-
-
--- local channel_push = ctx:socket(zmq.PUSH)
--- channel_push:bind("tcp://127.0.0.1:1234")
-
--- local channel_pull = ctx:socket(zmq.PULL)
--- channel_pull:bind("tcp://127.0.0.1:1235")
-
--- if config.hosts[1].routes['/'].recv_spec then
--- 	channel_pull = zmq:socket(luv.zmq.PULL)
--- 	channel_pull:bind(config.hosts[1].routes['/'].recv_spec)
--- end
 
 local function sendPushZmqMsg(channel_push, msg)
 	channel_push:send(msg)
 end
-
--- if config.hosts[1].routes['/'].send_spec then
--- 	channel_push = zmq:socket(luv.zmq.PUSH)
--- 	channel_push:connect(config.hosts[1].routes['/'].send_spec)
--- end
 
 local function receivePullZmqMsg(channel_pull, client)
 	local msg, err
@@ -153,8 +129,8 @@ local function http_response(body, code, status, headers)
     code = code or 200
     status = status or "OK"
     headers = headers or {}
-    headers['Content-Type'] = headers['Content-Type'] or 'text/plain'
-    headers['Content-Length'] = #body
+    headers['content-type'] = headers['content-type'] or 'text/plain'
+    headers['content-length'] = #body
 
     local raw = {}
     for k, v in pairs(headers) do
@@ -213,7 +189,7 @@ function init_parser(req)
 	end
 	
 	function cb.on_message_complete()
---		print('http parser complete')
+		print('http parser complete')
 		req['method'] = parser:method()
 		req['version'] = parser:version()
 
@@ -253,10 +229,9 @@ local cleanConnection = function (key, client, channel_push)
 		if channel_push then
 			-- send disconnect msg to bamboo handler
 			local disconnect_msg = {
-				type = 'disconnect',
-				conn_id = key
+				meta = {type = 'disconnect', conn_id = key}
 			}
-			sendPushZmqMsg(channel_push, disconnect_msg)
+			sendPushZmqMsg(channel_push, cmsgpack.pack(disconnect_msg))
 		end
 	end
 end
@@ -269,7 +244,8 @@ function findType(req)
 	if ext then
 		content_type = mimetypes[ext]
 	end
-	req['content-type'] = content_type or 'text/plain'
+
+	return content_type or 'text/plain'
 end
 
 function regularPath(host, path)
@@ -291,7 +267,7 @@ function regularPath(host, path)
 end
 
 function feedfile(host, client, req)
-
+	print('enter feedfile')
 		local path, err = regularPath(host, req.path)
 		if not path then
 			print(err)
@@ -305,7 +281,7 @@ function feedfile(host, client, req)
 		local file_t = posix.stat(path)
 		local file = posix.open(path, posix.O_RDONLY, "664")
 		--print(file_t)
-		local last_modified_time = tonumber(req.headers['If-Modified-Since'])
+		local last_modified_time = tonumber(req.headers['if-modified-since'])
 		if not file_t or file_t.type == 'directory' then
 			sendData(client, http_response('Not Found', 404, 'Not Found', {
 				['content-type'] = 'text/plain'
@@ -316,10 +292,10 @@ function feedfile(host, client, req)
 			local size = 0
 			if file_t then size = file_t.size end
 			local res = http_response_header(200, 'OK', {
-				['content-type'] = req['content-type'],
+				['content-type'] = findType(req),
 				['content-length'] = size,
-				['Last-Modified'] = file_t.mtime,
-				['Cache-Control'] = 'max-age='..host['max-age']
+				['last-modified'] = file_t.mtime,
+				['cache-control'] = 'max-age='..host['max-age']
 			})
 			-- send header
 			sendData(client, res)
@@ -334,7 +310,7 @@ function feedfile(host, client, req)
 					break
 				end
 			end
-
+			print('ready to close')
 			posix.close(file)
 	end
 	
@@ -390,11 +366,13 @@ local handlerProcessing = function (processor, client, req)
 end
 
 function serviceDispatcher(client, req)
-	local host = findHost(req)
+	--local host = findHost(req)
+	local host = HOSTS[1]
 	local pattern, handle_t = findHandle(host, req)
+	print(pattern, handle_t)
 	if pattern then
 		if handle_t.type == 'dir' then
-
+			print(host, client, req)
 			feedfile(host, client, req)
 
 		elseif handle_t.type == 'handler' then
@@ -437,7 +415,7 @@ local cb_from_http = function (client_skt)
 	end
 	
 	-- close after finishing processing
-	client.socket:close()
+	-- client.socket:close()
 
 end
 

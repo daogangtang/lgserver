@@ -29,6 +29,7 @@ server = {
 				--		['/'] = static_mmshuxia,
 				['/'] = handler_mmshuxia,
 				['/media/'] = static_mmshuxia,
+				['/favicon.ico'] = static_mmshuxia
 			}
         },
 
