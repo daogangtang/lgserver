@@ -267,12 +267,21 @@ local _skt_mt = {__index = {
 					   self.timeout=time
 					   return
 				   end,
+
 				   next = function (self)
 					   --coroutine.yield(self.socket, _reading)
 					   if self.socket then
 					       coroutine.yield(self.socket, _writing)
 					   end
-				   end
+				   end,
+				   
+				   -- clear the connection related coroutines
+				   popcoes = function (self)
+					   _writing:remove(self.socket)
+					   _writing:pop(self.socket)
+					   _reading:remove(self.socket)
+					   _reading:pop(self.socket)
+				   end,
                }}
 
 -- wraps a UDP socket, copy of TCP one adapted for UDP.
@@ -335,13 +344,16 @@ end
 
 local function _doTick (co, skt, ...)
   if not co then return end
-
+  -- here, res is a luasocket client socket obj,
+  -- new_q is _reading to _writing
   local ok, res, new_q = coroutine.resume(co, skt, ...)
 
+  -- if come from start or yield
   if ok and res and new_q then
     new_q:insert (res)
     new_q:push (res, co)
   else
+	-- if come from dead 
     if not ok then copcall (_errhandlers [co] or _deferror, res, co, skt) end
     if skt and autoclose then skt:close() end
     _errhandlers [co] = nil

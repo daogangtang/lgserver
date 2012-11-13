@@ -86,6 +86,7 @@ local function receivePullZmqMsg(channel_pull, client)
 			end
 		end
 	until msg
+
 	-- local more = src:getopt(zmq.RCVMORE) > 0
 	-- dst:send(data,more and zmq.SNDMORE or 0)
 
@@ -95,19 +96,24 @@ end
 -- client is copas object
 local function sendData (client, data)
 	if client then
-		client:send(data)
+		local status = client:send(data)
+		if not status then return false end
 	end
+	
+	return true
 end
 
 
 -- ======================================================================
 local function findHost(req) 
-	local ask_host = req.host
+	local ask_host = req.headers.host:match('^([%w%.]+):?')
 	for i, host in ipairs(HOSTS) do
-		if ask_host:match(host.matching..'$') then
+		if host.matching and ask_host:match(host.matching..'$') then
 			return host
 		end
 	end
+
+	return nil
 end
 
 function findHandle(host, req)
@@ -181,7 +187,7 @@ function init_parser(req)
 	end
 
 	function cb.on_header(field, value)
-		cur.headers[field] = value
+		cur.headers[field:lower()] = value
 	end
 
 	function cb.on_body(body)
@@ -216,7 +222,8 @@ local recordConnection = function (client, req)
 		key = makeUniKey()
 		if not CONNECTION_DICT[key] then break end
 	end
-
+	
+	-- push to bamboo handler
 	req.meta.conn_id = key
 	CONNECTION_DICT[key] = {client, req}
 	return key
@@ -269,49 +276,53 @@ function regularPath(host, path)
 end
 
 function feedfile(host, client, req)
-		local path, err = regularPath(host, req.path)
-		if not path then
-			print(err)
-			sendData(client, http_response('Forbidden', 403, 'Forbidden'))
-			-- need to close
-			return false
-		elseif path == host.root_dir then 
-			path = host.root_dir..'index.html' 
-		end
+	local path, err = regularPath(host, req.path)
+	if not path then
+		print(err)
+		sendData(client, http_response('Forbidden', 403, 'Forbidden'))
+		cleanConnection(req.meta.conn_id, client)
+		-- need to close
+		return false
+	elseif path == host.root_dir then 
+		path = host.root_dir..'index.html' 
+	end
 
-		local file_t = posix.stat(path)
-		local file = posix.open(path, posix.O_RDONLY, "664")
-		--print(file_t)
-		local last_modified_time = tonumber(req.headers['if-modified-since'])
-		if not file_t or file_t.type == 'directory' then
-			sendData(client, http_response('Not Found', 404, 'Not Found', {
-				['content-type'] = 'text/plain'
-			}))
-		elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
-			sendData(client, http_response('Not Changed', 304, 'Not Changed'))
-		else
-			local size = 0
-			if file_t then size = file_t.size end
-			local res = http_response_header(200, 'OK', {
-				['content-type'] = findType(req),
-				['content-length'] = size,
-				['last-modified'] = file_t.mtime,
-				['cache-control'] = 'max-age='..host['max-age']
-			})
-			-- send header
-			sendData(client, res)
-			while true do
-				local content = posix.read(file, 4096)	
-				-- if no data read, nread is 0, not nil
-				if #content > 0 then
-					sendData(client, content)
-					-- switch to another coroutine
-					client:next()
-				else
-					break
-				end
+	local file_t = posix.stat(path)
+	local file = posix.open(path, posix.O_RDONLY, "664")
+	--print(file_t)
+	local last_modified_time = tonumber(req.headers['if-modified-since'])
+	if not file_t or file_t.type == 'directory' then
+		sendData(client, http_response('Not Found', 404, 'Not Found', {
+										   ['content-type'] = 'text/plain'
+																	  }))
+	elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
+		sendData(client, http_response('Not Changed', 304, 'Not Changed'))
+	else
+		local size = 0
+		if file_t then size = file_t.size end
+		local res = http_response_header(200, 'OK', {
+											 ['content-type'] = findType(req),
+											 ['content-length'] = size,
+											 ['last-modified'] = file_t.mtime,
+											 ['cache-control'] = 'max-age='..host['max-age']
+													})
+		-- send header
+		sendData(client, res)
+		local content, s
+		while true do
+			content = posix.read(file, 4096)	
+			-- if no data read, nread is 0, not nil
+			if #content > 0 then
+				s = sendData(client, content)
+				-- if connection is broken
+				if not s then break end
+				-- switch to another coroutine
+				client:next()
+			else
+				break
 			end
-			posix.close(file)
+		end
+		posix.close(file)
 	end
 	
 	-- here, we use one connection to serve one file
@@ -340,6 +351,7 @@ local handlerProcessing = function (processor, client, req)
 	-- return to a single client connection
 	-- protocol define: res.conns must be a table
 	if #res.conns > 0 then
+		local conns_i = #res.conns
 		-- multi connections reples
 		for i, conn_id in pairs(res.conns) do
 			-- need to check client connection is ok now?
@@ -347,6 +359,12 @@ local handlerProcessing = function (processor, client, req)
 				local client = CONNECTION_DICT[conn_id][1]
 				sendData(client, http_response(res.data, res.code, res.status, res.headers))
 				
+				-- pop #conns - 1 coroutines from copas's _reading and _writing set
+				if conns_i >= 2 then
+					client:popcoes(client)
+					conns_i = conns_i - 1
+				end
+
 				-- here, we may close some connections in one coroutine, 
 				-- which can only cotains another connection
 				cleanConnection(conn_id, client, channel_push)
@@ -369,8 +387,11 @@ end
 function serviceDispatcher(key)
 	local client = CONNECTION_DICT[key][1]
 	local req = CONNECTION_DICT[key][2]
-	--local host = findHost(req)
-	local host = HOSTS[1]
+
+	local host = findHost(req)
+	if not host then
+		host = HOSTS[1]
+	end
 	local pattern, handle_t = findHandle(host, req)
 	if pattern then
 		if handle_t.type == 'dir' then
@@ -424,8 +445,9 @@ local cb_from_http = function (client_skt)
 end
 
 
-local server_socket = socket.bind("localhost", 8080)
+local server_socket = socket.bind(SERVER.bind_addr, SERVER.port)
 copas.addserver(server_socket, cb_from_http)
+print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
 
 -- while true do
 -- 	copas.step()
