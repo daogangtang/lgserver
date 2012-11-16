@@ -24,7 +24,7 @@ server = {
 			matching="mmshuxia.com",
 			root_dir = "/home/xen/workspace/lgserver/tmp/",
 
-			['max-age'] = 60,
+			-- ['max-age'] = 60,
 			routes={
 				--		['/'] = static_mmshuxia,
 				['/'] = handler_mmshuxia,

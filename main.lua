@@ -6,16 +6,23 @@ local mimetypes = require 'mime'
 local copas = require 'copas'
 local utils = require 'utils'
 local posix = require 'posix'
+local llthreads = require "llthreads"
 
 local zmq = require"zmq"
 
-require 'lglib'
-p = fptable
+--require 'lglib'
+--p = fptable
 --p = utils.prettyPrint
+
+
+local CONNECTION_DICT = {}
+local CHANNEL_PUSH_DICT = {}
+local CHANNEL_SUB_DICT = {}
 
 
 local config_file = arg[1] or './config.lua'
 
+-- ==============================================================
 -- load configurations
 local allconfig = {}
 setfenv(assert(loadfile(config_file)), setmetatable(allconfig, {__index=_G}))()
@@ -23,11 +30,6 @@ setfenv(assert(loadfile(config_file)), setmetatable(allconfig, {__index=_G}))()
 -- we define: one server in one config file
 local SERVER = allconfig.server
 
-
-local CONNECTION_DICT = {}
-local CHANNEL_DICT = {}
--- ==============================================================
-local ctx = zmq.init(1)
 
 local HOSTS = SERVER.hosts
 -- arrage hosts from longest to shorterest by matching hostname
@@ -43,6 +45,7 @@ for i, host in ipairs(HOSTS) do
 	host.patterns = patterns
 end
 
+local ctx = zmq.init(1)
 -- walk through hosts
 for i, host in ipairs(HOSTS) do
 	-- walk through routes in each host
@@ -51,15 +54,18 @@ for i, host in ipairs(HOSTS) do
 			local send_spec = processor.send_spec
 			local recv_spec = processor.recv_spec
 			-- avoid duplicated bindings
-			if not CHANNEL_DICT[send_spec] and not CHANNEL_DICT[recv_spec] then
+			if not CHANNEL_PUSH_DICT[send_spec] and not CHANNEL_SUB_DICT[recv_spec] then
+				-- bind push channels
 				local channel_push = ctx:socket(zmq.PUSH)
 				channel_push:bind(processor.send_spec)
-				local channel_pull = ctx:socket(zmq.PULL)
-				channel_pull:bind(processor.recv_spec)
+				
+				--local channel_sub = ctx:socket(zmq.SUB)
+				--channel_sub:setopt(zmq.SUBSCRIBE, "")
+				--channel_sub:connect(processor.recv_spec)
 				
 				-- record all zmq channels
-				CHANNEL_DICT[processor.send_spec] = channel_push
-				CHANNEL_DICT[processor.recv_spec] = channel_pull
+				CHANNEL_PUSH_DICT[processor.send_spec] = channel_push
+				--CHANNEL_SUB_DICT[processor.recv_spec] = channel_sub
 			end
 		--elseif processor.type == 'dir' then
 		end
@@ -67,69 +73,36 @@ for i, host in ipairs(HOSTS) do
 	end
 end
 
-local function sendPushZmqMsg(channel_push, msg)
-	channel_push:send(msg)
-end
 
-local function receivePullZmqMsg(channel_pull, client)
-	local msg, err
-	repeat
-		-- use noblock zmq to switch to other coroutines
-		msg, err = channel_pull:recv(zmq.NOBLOCK)
-		if not msg then
-			if err == 'timeout' then
-				-- print('wait....')
-				-- switch
-				client:next()
-			else
-				error("socket recv error:" .. err)
+local function findHost(req) 
+	if req.headers.host then
+		local ask_host = req.headers.host:match('^([%w%.]+):?')
+		for i, host in ipairs(HOSTS) do
+			if host.matching and ask_host:match(host.matching..'$') then
+				return host
 			end
 		end
-	until msg
-
-	-- local more = src:getopt(zmq.RCVMORE) > 0
-	-- dst:send(data,more and zmq.SNDMORE or 0)
-
-	return cmsgpack.unpack(msg)
-end
-
--- client is copas object
-local function sendData (client, data)
-	if client then
-		local status = client:send(data)
-		if not status then return false end
+	else
+		return nil
 	end
-	
-	return true
-end
-
-
--- ======================================================================
-local function findHost(req) 
-	local ask_host = req.headers.host:match('^([%w%.]+):?')
-	for i, host in ipairs(HOSTS) do
-		if host.matching and ask_host:match(host.matching..'$') then
-			return host
-		end
-	end
-
-	return nil
 end
 
 function findHandle(host, req)
-
-	local path = req.path:gsub('/+', '/')
-	for i, pattern in ipairs(host.patterns) do
-		if path:match('^'..pattern) then
-			return pattern, host.routes[pattern]
-		end
-	end
-	
-	return nil, nil
+    if req.path then	
+	    local path = req.path:gsub('/+', '/')
+	    for i, pattern in ipairs(host.patterns) do
+		    if path:match('^'..pattern) then
+			    return pattern, host.routes[pattern]
+		    end
+	    end
+    else
+    	return nil, nil
+    end
 end
 
 
--- ========================================================================
+-- ==============================================================
+-- http helpers
 local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
 
 local function http_response(body, code, status, headers)
@@ -157,93 +130,6 @@ local function http_response_header(code, status, headers)
     return string.format(HTTP_FORMAT, code, status, table.concat(raw, '\r\n'), '')
 end
 
-local function parse_path_query_fragment(uri)
-    local path, query, fragment, off
-    -- parse path
-    path, off = uri:match('([^?]*)()')
-    -- parse query
-    if uri:sub(off, off) == '?' then
-        query, off = uri:match('([^#]*)()', off + 1)
-    end
-    -- parse fragment
-    if uri:sub(off, off) == '#' then
-        fragment = uri:sub(off + 1)
-        off = #uri
-    end
-    return path or '/', query, fragment
-end
-
-function init_parser(req)
-	local cur	= req
-	local cb    = {}
-
-	function cb.on_message_begin()
-	end
-
-	function cb.on_url(url)
-		print(os.date("%Y-%m-%d %H:%M:%S", os.time()), req.meta.conn_id, url)
-		cur.url = url
-		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
-	end
-
-	function cb.on_header(field, value)
-		cur.headers[field:lower()] = value
-	end
-
-	function cb.on_body(body)
-		cur.body = body
-	end
-	
-	function cb.on_message_complete()
-		-- print('http parser complete')
---		req['method'] = parser:method()
---		req['version'] = parser:version()
-
-		req.meta.completed = true
-	end
-
-	return lhp.request(cb)
-end
-
-
-math.randomseed(os.time())
-
-local makeUniKey = function ()
-	-- key is 6 length
-	local key = math.random(100000, 999999)
-	return tostring(key)
-end
-
-
-local recordConnection = function (client, req)
-	local key
-	-- select a new key
-	while true do
-		key = makeUniKey()
-		if not CONNECTION_DICT[key] then break end
-	end
-	
-	-- push to bamboo handler
-	req.meta.conn_id = key
-	CONNECTION_DICT[key] = {client, req}
-	return key
-end
-
-local cleanConnection = function (key, client, channel_push)
-	if CONNECTION_DICT[key][1] == client then
-		CONNECTION_DICT[key] = nil
-		client.socket:close()
-		client = nil
-
-		if channel_push then
-			-- send disconnect msg to bamboo handler
-			local disconnect_msg = {
-				meta = {type = 'disconnect', conn_id = key}
-			}
-			sendPushZmqMsg(channel_push, cmsgpack.pack(disconnect_msg))
-		end
-	end
-end
 
 
 function findType(req)
@@ -275,12 +161,147 @@ function regularPath(host, path)
 	return path
 end
 
+
+local function parse_path_query_fragment(uri)
+    local path, query, fragment, off
+    -- parse path
+    path, off = uri:match('([^?]*)()')
+    -- parse query
+    if uri:sub(off, off) == '?' then
+        query, off = uri:match('([^#]*)()', off + 1)
+    end
+    -- parse fragment
+    if uri:sub(off, off) == '#' then
+        fragment = uri:sub(off + 1)
+        off = #uri
+    end
+    return path or '/', query, fragment
+end
+
+function init_parser(req)
+	local cur	= req
+	local cb    = {}
+    local bodies = {}
+	function cb.on_message_begin()
+	    --print('msg begin.')
+    end
+
+	function cb.on_url(url)
+		print(os.date("%Y-%m-%d %H:%M:%S", os.time()), req.meta.conn_id, url)
+		cur.url = url
+		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
+	end
+
+	function cb.on_header(field, value)
+		cur.headers[field:lower()] = value
+	end
+
+	function cb.on_body(chunk)
+        if chunk then table.insert(bodies, chunk) end
+        -- print(chunk)
+		--cur.body = body
+	end
+	
+	function cb.on_message_complete()
+		-- print('http parser complete')
+
+        cur.body = table.concat(bodies)
+		req.meta.completed = true
+	end
+
+	return lhp.request(cb)
+end
+
+
+
+-- ==============================================================
+-- zmq helpers
+local function sendPushZmqMsg(channel_push, req)
+	channel_push:send(cmsgpack.pack(req))
+end
+
+--[[
+local function receivePullZmqMsg(channel_pull, client)
+	local msg, err
+	repeat
+		-- use noblock zmq to switch to other coroutines
+		msg, err = channel_pull:recv(zmq.NOBLOCK)
+		if not msg then
+			if err == 'timeout' then
+				-- print('wait....')
+				-- switch
+				client:next()
+			else
+				error("socket recv error:" .. err)
+			end
+		end
+	until msg
+
+	-- local more = src:getopt(zmq.RCVMORE) > 0
+	-- dst:send(data,more and zmq.SNDMORE or 0)
+
+	return cmsgpack.unpack(msg)
+end
+--]]
+
+-- client is copas object
+local function sendData (client, data)
+	if client then
+		local status = client:send(data)
+		if not status then return false end
+	end
+	
+	return true
+end
+
+
+math.randomseed(os.time())
+
+local makeUniConnKey = function ()
+	-- key is 6 length
+	local key
+	-- select a new key
+	while true do
+	 	key = math.random(100000, 999999)
+		if not CONNECTION_DICT[key] then break end
+	end
+	
+	return tostring(key)
+end
+
+local recordConnection = function (client, req)
+	local key = makeUniConnKey()
+	
+	-- push to bamboo handler
+	req.meta.conn_id = key
+	CONNECTION_DICT[key] = {client, req}
+	return key
+end
+
+
+local cleanConnection = function (key, client, channel_push)
+	--if CONNECTION_DICT[key] and CONNECTION_DICT[key][1] == client then
+		CONNECTION_DICT[key] = nil
+		client.socket:close()
+
+		if channel_push then
+			-- send disconnect msg to bamboo handler
+			local disconnect_msg = {
+				meta = {type = 'disconnect', conn_id = key}
+			}
+			sendPushZmqMsg(channel_push, disconnect_msg)
+		end
+	end
+end
+
+-- ====================================================================
+-- static file server handler
 function feedfile(host, client, req)
 	local path, err = regularPath(host, req.path)
 	if not path then
 		print(err)
 		sendData(client, http_response('Forbidden', 403, 'Forbidden'))
-		cleanConnection(req.meta.conn_id, client)
+		--cleanConnection(req.meta.conn_id, client)
 		-- need to close
 		return false
 	elseif path == host.root_dir then 
@@ -301,16 +322,16 @@ function feedfile(host, client, req)
 		local size = 0
 		if file_t then size = file_t.size end
 		local res = http_response_header(200, 'OK', {
-											 ['content-type'] = findType(req),
-											 ['content-length'] = size,
-											 ['last-modified'] = file_t.mtime,
-											 ['cache-control'] = 'max-age='..host['max-age']
-													})
+			['content-type'] = findType(req),
+			['content-length'] = size,
+			['last-modified'] = file_t.mtime,
+			['cache-control'] = 'max-age='..(host['max-age'] or '0')
+		})
 		-- send header
 		sendData(client, res)
 		local content, s
 		while true do
-			content = posix.read(file, 4096)	
+			content = posix.read(file, 8192)	
 			-- if no data read, nread is 0, not nil
 			if #content > 0 then
 				s = sendData(client, content)
@@ -326,62 +347,45 @@ function feedfile(host, client, req)
 	end
 	
 	-- here, we use one connection to serve one file
-	cleanConnection(req.meta.conn_id, client)
+	-- cleanConnection(req.meta.conn_id, client)
 end
 
-local function findChannelsByProcessor (processor)
-	return CHANNEL_DICT[processor.send_spec], CHANNEL_DICT[processor.recv_spec]
+local function getPushChannel (processor)
+--	return CHANNEL_PUSH_DICT[processor.send_spec], CHANNEL_SUB_DICT[processor.recv_spec]
+	return CHANNEL_PUSH_DICT[processor.send_spec]
+end
+
+
+local function findPushChannel (req)
+
+	local host = findHost(req)
+	if not host then
+		host = HOSTS[1]
+	end
+
+	local _, processor = findHandle(host, req)
+    local channel_push
+    if processor then
+	    channel_push = CHANNEL_PUSH_DICT[processor.send_spec]
+    end
+
+	return channel_push
+end
+
+local response = function (conn_id, res)
+    local conn_obj = CONNECTION_DICT[conn_id]
+	if obj then
+		local client = conn_obj[1]
+		sendData(client, http_response(res.data, res.code, res.status, res.headers))
+	end		
 end
 
 local handlerProcessing = function (processor, client, req)
 	
-	local channel_push, channel_pull = findChannelsByProcessor(processor)
+	local channel_push = getPushChannel(processor)
 
-	sendPushZmqMsg(channel_push, cmsgpack.pack(req))
-	-- res is the response string from handler
-	local res = receivePullZmqMsg(channel_pull, client)
-	-- temporary test
-	-- client:send(res)
-	-- client:send(http_response('Hello world!', res.code, res.status, res.headers))
-	-- cleanConnection(req.meta.conn_id, client)
-	-- print('return from zmq pull')
-
-	if not res.meta or not res.conns then return end
-
-	-- return to a single client connection
-	-- protocol define: res.conns must be a table
-	if #res.conns > 0 then
-		local conns_i = #res.conns
-		-- multi connections reples
-		for i, conn_id in pairs(res.conns) do
-			-- need to check client connection is ok now?
-			if CONNECTION_DICT[conn_id] then
-				local client = CONNECTION_DICT[conn_id][1]
-				sendData(client, http_response(res.data, res.code, res.status, res.headers))
-				
-				-- pop #conns - 1 coroutines from copas's _reading and _writing set
-				if conns_i >= 2 then
-					client:popcoes(client)
-					conns_i = conns_i - 1
-				end
-
-				-- here, we may close some connections in one coroutine, 
-				-- which can only cotains another connection
-				cleanConnection(conn_id, client, channel_push)
-			end
-		end
-	else
-		-- single connection reply
-		-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
-		local conn_id = res.meta.conn_id
-		if CONNECTION_DICT[conn_id] then
-			local client = CONNECTION_DICT[conn_id][1]
-			sendData(client, http_response(res.data, res.code, res.status, res.headers))
-			
-			cleanConnection(conn_id, client, channel_push)
-		end					
-		
-	end
+	sendPushZmqMsg(channel_push, req)
+	
 end
 
 function serviceDispatcher(key)
@@ -410,50 +414,146 @@ function serviceDispatcher(key)
 end
 
 -- client_skt: tcp connection to browser
-
 local cb_from_http = function (client_skt)
 	-- client is copas wrapped object
 	local client = copas.wrap(client_skt)
 	local req = {headers={}, data={}, meta={completed = false}}
 	local key = recordConnection(client, req)
 	local parser = init_parser(req)
-	
 
-	-- read all http strings
+	-- while here, for keep-alive
 	while true do
-		-- read one line each time
-		local reqstr = client:receive()
-		if not reqstr then break end
-		
-		local bytes_read = parser:execute(reqstr..'\r\n')
-		
-		if req.meta.completed then break end
+		local s, errmsg, partial = client:receive("*a")
+		if not s and errmsg == 'closed' then 
+		    break
+		end
+
+		local reqstr = s or partial
+		parser:execute(reqstr)
+
+		if req.meta.completed then
+			req['method'] = parser:method()
+			req['version'] = parser:version()
+			serviceDispatcher(key)
+		else
+			client:send('invalid http request')
+		end
 	end
 
-	if req.meta.completed then
-		req['method'] = parser:method()
-		req['version'] = parser:version()
-
-		serviceDispatcher(key)
-	else
-		client:send('invalid http request')
-	end
-	
-	-- close after finishing processing
-	-- client.socket:close()
+    cleanConnection (key, client, findPushChannel(req))
 
 end
 
 
-local server_socket = socket.bind(SERVER.bind_addr, SERVER.port)
-copas.addserver(server_socket, cb_from_http)
+
+local cb_from_thread = function (client_skt)
+	local client = copas.wrap(client_skt)
+	local left = ''
+	while true do
+		local reqstr = ''
+		
+		-- may have more than 1 messages
+		while true do
+			local s, errmsg, partial = client:receive(8192)
+--			if not s and errmsg == 'closed' then end
+--			print('s, errmsg, partial', s and #s, errmsg)
+			if not s and errmsg == 'timeout' then 
+				if partial and #partial > 0 then
+					reqstr = reqstr .. partial
+				end
+				break
+			end 
+			reqstr = reqstr..(s or partial)
+		end
+--		print('in thread callback', #reqstr, reqstr:sub(1,10))
+		
+		-- retreive messages
+		local msgs = {}
+		local c, l = 1, 1
+		while c < #reqstr do
+			l = reqstr:find(' ', c)
+			if not l then break end
+			
+			local msg_length = tonumber(reqstr:sub(c, l-1))
+			local msg = reqstr:sub(l+1, l+msg_length)
+			table.insert(msgs, msg)
+
+			c = l + msg_length + 1
+		end
+		
+		for _, msg in ipairs(msgs) do
+			local res = cmsgpack.unpack(msg)
+			
+			if res.meta and res.conns then
+				-- protocol define: res.conns must be a table
+				if #res.conns > 0 then
+					-- multi connections reples
+					for i, conn_id in ipairs(res.conns) do
+						response (conn_id, res)
+					end
+				else
+					-- single connection reply
+					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
+					local conn_id = res.meta.conn_id
+					--print('in single sending...', conn_id)
+					response (conn_id, res)
+				end
+			end
+			
+		end
+	end
+end
+
+
+local server_send = socket.bind(SERVER.bind_addr, SERVER.inner_port or '12310')
+copas.addserver(server_send, cb_from_thread)
+
+
+local server_recv = socket.bind(SERVER.bind_addr, SERVER.port)
+copas.addserver(server_recv, cb_from_http)
 print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
 
+
+-- ==========================================================
+-- another thread
+local thread_code = [[
+	require 'socket'
+	require 'zmq'
+
+    local host, port = ...
+				
+    local client = assert(socket.connect(host, port))
+    local ctx = zmq.init(1)
+    local channel_sub = ctx:socket(zmq.SUB)
+	channel_sub:setopt(zmq.SUBSCRIBE, "")
+	channel_sub:connect('tcp://'..host..':'..port)
+		
+    while true do
+		local msg, err = channel_sub:recv()   -- block wait
+		-- print('return msg...', #msg)
+	
+		local s, errmsg = client:send(#msg..' '..msg)
+		if not s and errmsg == 'closed' then
+			client = assert(socket.connect(host, port))
+			client:send(#msg..' '..msg)
+		end
+    end
+    
+    print('Client Ends.')
+]]
+
+-- create detached child thread.
+local thread = llthreads.new(thread_code, SERVER.bind_addr, SERVER.inner_port)
+-- start non-joinable detached child thread.
+assert(thread:start(true))
+
+
 -- while true do
--- 	copas.step()
--- 	-- processing for other events from your system here
+-- 	print('-------------------------------------------------')
+--  	copas.step()
+--  	-- processing for other events from your system here
 -- end
 
+-- main loop
 copas.loop()
-
 
