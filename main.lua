@@ -450,7 +450,7 @@ local cb_from_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
 	local left = ''
 	while true do
-		local reqstr = ''
+		local reqstrs = {}
 		
 		-- may have more than 1 messages
 		while true do
@@ -459,14 +459,17 @@ local cb_from_thread = function (client_skt)
 --			print('s, errmsg, partial', s and #s, errmsg)
 			if not s and errmsg == 'timeout' then 
 				if partial and #partial > 0 then
-					reqstr = reqstr .. partial
+					table.insert(reqstrs, partial)
+					--reqstr = reqstr .. partial
 				end
 				break
 			end 
-			reqstr = reqstr..(s or partial)
+			-- reqstr = reqstr..(s or partial)
+			table.insert(reqstrs, (s or partial))
 		end
 --		print('in thread callback', #reqstr, reqstr:sub(1,10))
 		
+		local reqstr = table.concat(reqstrs)
 		-- retreive messages
 		local msgs = {}
 		local c, l = 1, 1
