@@ -17,7 +17,7 @@ local zmq = require"zmq"
 
 local CONNECTION_DICT = {}
 local CHANNEL_PUSH_DICT = {}
-local CHANNEL_SUB_DICT = {}
+local CHANNEL_SUB_LIST = {}
 
 
 local config_file = arg[1] or './config.lua'
@@ -54,7 +54,8 @@ for i, host in ipairs(HOSTS) do
 			local send_spec = processor.send_spec
 			local recv_spec = processor.recv_spec
 			-- avoid duplicated bindings
-			if not CHANNEL_PUSH_DICT[send_spec] and not CHANNEL_SUB_DICT[recv_spec] then
+			--if not CHANNEL_PUSH_DICT[send_spec] and not CHANNEL_SUB_DICT[recv_spec] then
+			if not CHANNEL_PUSH_DICT[send_spec] then
 				-- bind push channels
 				local channel_push = ctx:socket(zmq.PUSH)
 				channel_push:bind(processor.send_spec)
@@ -65,7 +66,7 @@ for i, host in ipairs(HOSTS) do
 				
 				-- record all zmq channels
 				CHANNEL_PUSH_DICT[processor.send_spec] = channel_push
-				--CHANNEL_SUB_DICT[processor.recv_spec] = channel_sub
+				table.insert(CHANNEL_SUB_LIST, processor.recv_spec)
 			end
 		--elseif processor.type == 'dir' then
 		end
@@ -82,9 +83,9 @@ local function findHost(req)
 				return host
 			end
 		end
-	else
-		return nil
 	end
+
+	return nil
 end
 
 function findHandle(host, req)
@@ -291,7 +292,6 @@ local cleanConnection = function (key, client, channel_push)
 			}
 			sendPushZmqMsg(channel_push, disconnect_msg)
 		end
-	end
 end
 
 -- ====================================================================
@@ -374,7 +374,7 @@ end
 
 local response = function (conn_id, res)
     local conn_obj = CONNECTION_DICT[conn_id]
-	if obj then
+	if conn_obj then
 		local client = conn_obj[1]
 		sendData(client, http_response(res.data, res.code, res.status, res.headers))
 	end		
@@ -465,7 +465,7 @@ local cb_from_thread = function (client_skt)
 			end 
 			reqstr = reqstr..(s or partial)
 		end
---		print('in thread callback', #reqstr, reqstr:sub(1,10))
+		-- print('in thread callback', #reqstr, reqstr:sub(1,10))
 		
 		-- retreive messages
 		local msgs = {}
@@ -495,7 +495,7 @@ local cb_from_thread = function (client_skt)
 					-- single connection reply
 					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
 					local conn_id = res.meta.conn_id
-					--print('in single sending...', conn_id)
+					-- print('in single sending...', conn_id)
 					response (conn_id, res)
 				end
 			end
@@ -520,13 +520,14 @@ local thread_code = [[
 	require 'socket'
 	require 'zmq'
 
-    local host, port = ...
-				
+    local host, port, channel_sub_addr = ...
+--  print(host, port, channel_sub_addr)
+
     local client = assert(socket.connect(host, port))
     local ctx = zmq.init(1)
     local channel_sub = ctx:socket(zmq.SUB)
 	channel_sub:setopt(zmq.SUBSCRIBE, "")
-	channel_sub:connect('tcp://'..host..':'..port)
+	channel_sub:connect(channel_sub_addr)
 		
     while true do
 		local msg, err = channel_sub:recv()   -- block wait
@@ -543,7 +544,7 @@ local thread_code = [[
 ]]
 
 -- create detached child thread.
-local thread = llthreads.new(thread_code, SERVER.bind_addr, SERVER.inner_port)
+local thread = llthreads.new(thread_code, SERVER.bind_addr, SERVER.inner_port or '12310', CHANNEL_SUB_LIST[1])
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
