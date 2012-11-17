@@ -501,7 +501,7 @@ local cb_from_file_thread = function (client_skt)
 		
 		-- may have more than 1 messages
 		while true do
-			local s, errmsg, partial = client:receive(8192)
+			local s, errmsg, partial = client:receive(4108)
 --			if not s and errmsg == 'closed' then end
 --			print('s, errmsg, partial', s and #s, errmsg)
 			if s then 
@@ -650,8 +650,8 @@ local file_thread = [==[
 			end
 		end
 		
-		local path, last_modified_time, max_age = unpack(lgstring.split(reqstr, ' '))
-		print(path, last_modified_time, max_age)
+		local key, path, last_modified_time, max_age = unpack(lgstring.split(reqstr, ' '))
+		print(key, path, last_modified_time, max_age)
 
 		if path then
 			local file_t = posix.stat(path)
@@ -675,7 +675,7 @@ local file_thread = [==[
 				client:send(res)
 				local content, s
 				while true do
-					content = posix.read(file, 8192)	
+					content = posix.read(file, 4096)	
 					-- if no data read, nread is 0, not nil
 					if #content > 0 then
 						s = client:send(content)
