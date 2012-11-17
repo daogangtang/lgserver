@@ -508,31 +508,42 @@ print('FileThreadMasterSocket', FileThreadMasterSocket)
 		local file_size_string
 		local PART_LEN = 8192
 		local part_len = PART_LEN
-		local received_size = 0
+		local received_file_size = 0
 		-- one while treate on file
 -- tangg
-		print('------> a new file')
+--		print('------> a new file', left_data and #left_data)
 		while true do
 			local s, errmsg, partial = client:receive(part_len)
 --			if not s and errmsg == 'closed' then end
-			print('in file server.  s, errmsg, part, part_len', s and #s, errmsg, partial and #partial, part_len)
+--			print('in file server.  s, errmsg, part, part_len', s and #s, errmsg, partial and #partial, part_len)
 			if errmsg == 'closed' then break end
 			
 			local data = s or partial
+--print('data', #data, left_data and #left_data)
 			if left_data then 
 				data = left_data .. data 
 				left_data = nil 
 			end
+--print('===>')
+--print(data:sub(1,20))
+--print('key', key)
 			-- if stream is continued
-			if key then
+			if key and received_file_size < file_size then
+--				print('0008', received_file_size, #data)
 				-- return file part data immediately
 				responseData(key, data)
-				received_size = received_size + #data
-				part_len = (file_size - received_size < PART_LEN) and file_size - received_size or PART_LEN
+				received_file_size = received_file_size + #data
+--				print('0009', received_file_size)
+				part_len = (file_size - received_file_size < PART_LEN) and file_size - received_file_size or PART_LEN
+--				print('0010', part_len)
 				
 			else
-				while #data > 10 do
+				-- for new data
+				while #data >= 10 do
+					
 					key, file_size_string = data:match('^(%d%d%d%d%d%d):(%d+):')
+--print('--->', key, file_size_string)
+--print(#data, data:sub(1,20))
 					if key then
 						-- file_size_string containing the http headers of file
 						local len2 = 0
@@ -542,42 +553,53 @@ print('FileThreadMasterSocket', FileThreadMasterSocket)
 						file_size = tonumber(file_size_string)
 
 						local head_len = (6+1+len2+1)
-						received_size = #data - head_len
-						if received_size >= file_size then
+						local left_size = #data - head_len
+						if left_size >= file_size then
 							-- return all data of this file
 							responseData(key, data:sub(head_len+1, head_len+file_size))
 							-- copy the rest to left_data
 							data = data:sub(head_len+file_size+1)
+							received_file_size = file_size
+							key = nil
 						else
 							responseData(key, data:sub(head_len+1))
-							part_len = (file_size - received_size < PART_LEN) and file_size - received_size or PART_LEN
+							part_len = (file_size - left_size < PART_LEN) and file_size - left_size or PART_LEN
+							received_file_size = left_size
+							left_data = nil
+--							print('---part_len received_file_size', part_len, received_file_size)
 							break
 						end
 											
 					else
-						local key, code = data:match('^(%d%d%d%d%d%d) (%d%d%d)')
-						if key then
+						local key2, code = data:match('^(%d%d%d%d%d%d) (%d%d%d)')
+--print('-->2', key2, code)
+--print(data:sub(1,20))
+						if key2 then
 							if code == '404' then
-								responseData(key, http_response('Not Found', 404, 'Not Found'))
+								responseData(key2, http_response('Not Found', 404, 'Not Found'))
 							elseif code == '304' then
-								responseData(key, http_response('Not Changed', 304, 'Not Changed'))
+--								print('in 304 ready return')
+								responseData(key2, http_response('Not Changed', 304, 'Not Changed'))
 							end
 							data = data:sub(11)
+							-- key = nil
 						else
 							error('file protocol data error.')
 						end
 					end
 					left_data = data
+					part_len = PART_LEN
 				end
 			end
 
-			print('received_size, file_size', received_size, file_size)
+--			print('received_size, file_size', received_file_size, file_size)
 			-- next file
-			if received_size >= file_size then break end
+			if received_file_size >= file_size then break end
 
 		end
 
 		key = nil
+		
 			
 	end
 end
@@ -683,7 +705,7 @@ print('enter file thread', host, port)
 		local key, path, last_modified_time, max_age = unpack(lgstring.split(reqstr:sub(1,-2), ' '))
 		if last_modified_time then last_modified_time = tonumber(last_modified_time) end
 		if max_age then max_age = tonumber(max_age) end
-		print('~~~in file thread', key, path, last_modified_time, max_age)
+--		print('~~~in file thread', key, path, last_modified_time, max_age)
 
 		if path then
 			local file_t = posix.stat(path)
@@ -695,7 +717,7 @@ print('enter file thread', host, port)
 			elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
 				client:send(string.format('%s %s', key, 304))
 			else
-print('ready to read file...', path)
+--print('ready to read file...', path)
 				local size = 0
 				if file_t then size = file_t.size end
 				local res = http_response_header(200, 'OK', {
