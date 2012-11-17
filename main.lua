@@ -18,7 +18,7 @@ local zmq = require"zmq"
 local CONNECTION_DICT = {}
 local CHANNEL_PUSH_DICT = {}
 local CHANNEL_SUB_LIST = {}
-
+local FileThreadMasterSocket
 
 local config_file = arg[1] or './config.lua'
 
@@ -271,9 +271,48 @@ local cleanConnection = function (key, client, channel_push)
 		end
 end
 
+local function getPushChannel (processor)
+--	return CHANNEL_PUSH_DICT[processor.send_spec], CHANNEL_SUB_DICT[processor.recv_spec]
+	return CHANNEL_PUSH_DICT[processor.send_spec]
+end
+
+
+local function findPushChannel (req)
+
+	local host = findHost(req)
+	if not host then
+		host = HOSTS[1]
+	end
+
+	local _, processor = findHandle(host, req)
+    local channel_push
+    if processor then
+	    channel_push = CHANNEL_PUSH_DICT[processor.send_spec]
+    end
+
+	return channel_push
+end
+
+local responseFileData = function (conn_id, data)
+    local conn_obj = CONNECTION_DICT[conn_id]
+	if conn_obj then
+		local client = conn_obj[1]
+		client:send(data)
+	end		
+end
+
+
+local response = function (conn_id, res)
+    local conn_obj = CONNECTION_DICT[conn_id]
+	if conn_obj then
+		local client = conn_obj[1]
+		sendData(client, http_response(res.data, res.code, res.status, res.headers))
+	end		
+end
+
 -- ====================================================================
 -- static file server handler
-function feedfile(host, client, req)
+function feedfile(host, key, client, req)
 	local path, err = regularPath(host, req.path)
 	if not path then
 		print(err)
@@ -285,14 +324,18 @@ function feedfile(host, client, req)
 		path = host.root_dir..'index.html' 
 	end
 
-	local reqstr = string.format('%s %s %s', 
-								 path, 
-								 req.headers['if-modified-since'] or '', 
-								 host['max-age'] or '') 
-	
+	local params = {}
+	table.insert(path)
+	table.insert(req.headers['if-modified-since'])
+	table.insert(host['max-age'])
 
+	local reqstr = table.concat(params)
+	-- send parameters to file thread
+	-- and return immediately
+	FileThreadMasterSocket:send(reqstr)
 
-local file_t = posix.stat(path)
+--[[
+	local file_t = posix.stat(path)
 	local file = posix.open(path, posix.O_RDONLY, "664")
 	--print(file_t)
 	local last_modified_time = tonumber(req.headers['if-modified-since'])
@@ -329,39 +372,9 @@ local file_t = posix.stat(path)
 		end
 		posix.close(file)
 	end
-	
+--]]	
 	-- here, we use one connection to serve one file
 	-- cleanConnection(req.meta.conn_id, client)
-end
-
-local function getPushChannel (processor)
---	return CHANNEL_PUSH_DICT[processor.send_spec], CHANNEL_SUB_DICT[processor.recv_spec]
-	return CHANNEL_PUSH_DICT[processor.send_spec]
-end
-
-
-local function findPushChannel (req)
-
-	local host = findHost(req)
-	if not host then
-		host = HOSTS[1]
-	end
-
-	local _, processor = findHandle(host, req)
-    local channel_push
-    if processor then
-	    channel_push = CHANNEL_PUSH_DICT[processor.send_spec]
-    end
-
-	return channel_push
-end
-
-local response = function (conn_id, res)
-    local conn_obj = CONNECTION_DICT[conn_id]
-	if conn_obj then
-		local client = conn_obj[1]
-		sendData(client, http_response(res.data, res.code, res.status, res.headers))
-	end		
 end
 
 local handlerProcessing = function (processor, client, req)
@@ -425,17 +438,13 @@ local cb_from_http = function (client_skt)
 	end
 
     cleanConnection (key, client, findPushChannel(req))
-
 end
 
-
-
-local cb_from_thread = function (client_skt)
+local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
 	local left = ''
 	while true do
-		local reqstr = ''
-		
+		local reqstr
 		-- may have more than 1 messages
 		while true do
 			local s, errmsg, partial = client:receive(8192)
@@ -488,89 +497,76 @@ local cb_from_thread = function (client_skt)
 	end
 end
 
-
-local server_send = socket.bind('127.0.0.1', '12310')
-copas.addserver(server_send, cb_from_thread)
-
-
 local cb_from_file_thread = function (client_skt)
+	FileThreadMasterSocket = client_skt
 	local client = copas.wrap(client_skt)
-	local left = ''
 	while true do
-		local reqstr = ''
-		
-		-- may have more than 1 messages
+		local key
+		local file_size = 0
+		local file_size_string
+		local PART_LEN = 8192
+		local part_len = PART_LEN
+		local received_size = 0
+		-- one while treate on file
 		while true do
-			local s, errmsg, partial = client:receive(4108)
+			local s, errmsg, partial = client:receive(part_len)
 --			if not s and errmsg == 'closed' then end
 --			print('s, errmsg, partial', s and #s, errmsg)
-			if s then 
+			if errmsg == 'closed' then break end
+			
+			local data = s or partial
+
+			-- if stream is continued
+			if key then
+				-- return file part data immediately
+				responseFileData(key, data)
+				received_size = received_size + #data
 				
-			end
-
-
-			if not s and errmsg == 'timeout' then 
-				if partial and #partial > 0 then
-					reqstr = reqstr .. partial
-				end
-				break
-			end 
-			reqstr = reqstr..(s or partial)
-		end
-		-- print('in thread callback', #reqstr, reqstr:sub(1,10))
-		
-		-- retreive messages
-		local msgs = {}
-		local c, l = 1, 1
-		while c < #reqstr do
-			l = reqstr:find(' ', c)
-			if not l then break end
-			
-			local msg_length = tonumber(reqstr:sub(c, l-1))
-			local msg = reqstr:sub(l+1, l+msg_length)
-			table.insert(msgs, msg)
-
-			c = l + msg_length + 1
-		end
-		
-		for _, msg in ipairs(msgs) do
-			local res = cmsgpack.unpack(msg)
-			
-			if res.meta and res.conns then
-				-- protocol define: res.conns must be a table
-				if #res.conns > 0 then
-					-- multi connections reples
-					for i, conn_id in ipairs(res.conns) do
-						response (conn_id, res)
+			else
+				key = data:match('^(%d%d%d%d%d%d):%d')
+				if key then
+					file_size_string = data:match('^'..key..':(%d+):')
+					local len2 = 0
+					if file_size_string then
+						len2 = #file_size_string
 					end
+					file_size = tonumber(file_size_string)
+
+					local head_len = (6+1+len2+1)
+					received_size = #data - head_len
+
+					-- return file part data immediately
+					responseFileData(key, data:sub(head_len+1))
 				else
-					-- single connection reply
-					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
-					local conn_id = res.meta.conn_id
-					-- print('in single sending...', conn_id)
-					response (conn_id, res)
+					error('file protocol data error.')
 				end
 			end
 			
+			part_len = (file_size - received_size < PART_LEN) and file_size - received_size or PART_LEN
+
+			-- next file
+			if received_size >= file_size then break end
+
 		end
+			
 	end
 end
 
 
-local server_file_send = socket.bind('127.0.0.1', '12311')
-copas.addserver(server_file_send, cb_from_file_thread)
 
+local zmq_server = socket.bind('127.0.0.1', '12310')
+copas.addserver(zmq_server, cb_from_zmq_thread)
 
+local file_server = socket.bind('127.0.0.1', '12311')
+copas.addserver(file_server, cb_from_file_thread)
 
-
-local server_recv = socket.bind(SERVER.bind_addr, SERVER.port)
-copas.addserver(server_recv, cb_from_http)
+local main_server = socket.bind(SERVER.bind_addr, SERVER.port)
+copas.addserver(main_server, cb_from_http)
 print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
-
 
 -- ==========================================================
 -- another thread
-local thread_code = [==[
+local zmq_thread = [==[
 	require 'socket'
 	require 'zmq'
 
@@ -598,18 +594,20 @@ local thread_code = [==[
 ]==]
 
 -- create detached child thread.
-local thread = llthreads.new(thread_code, '127.0.0.1', '12310', CHANNEL_SUB_LIST[1])
+local thread = llthreads.new(zmq_thread, '127.0.0.1', '12310', CHANNEL_SUB_LIST[1])
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
 
-local file_thread = [==[
+local file_thread = 
+[==[
 	local host, port = ...
 
 	local lgstring = require 'lgstring'
 	local posix = require 'posix'
 	local socket = require 'socket'
-    local client = assert(socket.connect(host, port))
+    -- create connection, make enter file server
+	local client = assert(socket.connect(host, port))
 	local mimetypes = require 'mime'
 
     local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
@@ -666,22 +664,24 @@ local file_thread = [==[
 				local size = 0
 				if file_t then size = file_t.size end
 				local res = http_response_header(200, 'OK', {
-													 ['content-type'] = findType(path),
-													 ['content-length'] = size,
-													 ['last-modified'] = file_t.mtime,
-													 ['cache-control'] = 'max-age='..(max_age or '0')
-															})
+					['content-type'] = findType(path),
+					['content-length'] = size,
+					['last-modified'] = file_t.mtime,
+					['cache-control'] = 'max-age='..(max_age or '0')
+				})
 				-- send header
 				client:send(res)
+				
 				local content, s
+				local i = 0
 				while true do
 					content = posix.read(file, 4096)	
 					-- if no data read, nread is 0, not nil
 					if #content > 0 then
-						s = client:send(content)
-						-- if connection is broken
-						if not s then 
-							client = assert(socket.connect(host, port))
+						i = i + 1
+						if i == 1 then
+							client:send(string.format('%s:%s:%s', key, size, content))
+						else
 							client:send(content)
 						end
 					else
@@ -692,6 +692,7 @@ local file_thread = [==[
 			end
 		end
 	end	
+
 ]==]
 
 -- create detached child thread.
@@ -701,7 +702,6 @@ assert(thread:start(true))
 
 
 -- while true do
--- 	print('-------------------------------------------------')
 --  	copas.step()
 --  	-- processing for other events from your system here
 -- end
