@@ -293,14 +293,13 @@ local function findPushChannel (req)
 	return channel_push
 end
 
-local responseFileData = function (conn_id, data)
+local responseData = function (conn_id, data)
     local conn_obj = CONNECTION_DICT[conn_id]
 	if conn_obj then
 		local client = conn_obj[1]
 		client:send(data)
 	end		
 end
-
 
 local response = function (conn_id, res)
     local conn_obj = CONNECTION_DICT[conn_id]
@@ -325,11 +324,13 @@ function feedfile(host, key, client, req)
 	end
 
 	local params = {}
-	table.insert(path)
-	table.insert(req.headers['if-modified-since'])
-	table.insert(host['max-age'])
+	table.insert(params, key)
+	table.insert(params, path)
+	table.insert(params, req.headers['if-modified-since'])
+	table.insert(params, host['max-age'])
+	table.insert(params, '\n')
 
-	local reqstr = table.concat(params)
+	local reqstr = table.concat(params, ' ')
 	-- send parameters to file thread
 	-- and return immediately
 	FileThreadMasterSocket:send(reqstr)
@@ -396,7 +397,7 @@ function serviceDispatcher(key)
 	local pattern, handle_t = findHandle(host, req)
 	if pattern then
 		if handle_t.type == 'dir' then
-			feedfile(host, client, req)
+			feedfile(host, key, client, req)
 
 		elseif handle_t.type == 'handler' then
 			handlerProcessing(handle_t, client, req)
@@ -442,9 +443,8 @@ end
 
 local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
-	local left = ''
 	while true do
-		local reqstr
+		local reqstr = ''
 		-- may have more than 1 messages
 		while true do
 			local s, errmsg, partial = client:receive(8192)
@@ -499,7 +499,9 @@ end
 
 local cb_from_file_thread = function (client_skt)
 	FileThreadMasterSocket = client_skt
+print('FileThreadMasterSocket', FileThreadMasterSocket)
 	local client = copas.wrap(client_skt)
+	local left_data
 	while true do
 		local key
 		local file_size = 0
@@ -508,46 +510,74 @@ local cb_from_file_thread = function (client_skt)
 		local part_len = PART_LEN
 		local received_size = 0
 		-- one while treate on file
+-- tangg
+		print('------> a new file')
 		while true do
 			local s, errmsg, partial = client:receive(part_len)
 --			if not s and errmsg == 'closed' then end
---			print('s, errmsg, partial', s and #s, errmsg)
+			print('in file server.  s, errmsg, part, part_len', s and #s, errmsg, partial and #partial, part_len)
 			if errmsg == 'closed' then break end
 			
 			local data = s or partial
-
+			if left_data then 
+				data = left_data .. data 
+				left_data = nil 
+			end
 			-- if stream is continued
 			if key then
 				-- return file part data immediately
-				responseFileData(key, data)
+				responseData(key, data)
 				received_size = received_size + #data
+				part_len = (file_size - received_size < PART_LEN) and file_size - received_size or PART_LEN
 				
 			else
-				key = data:match('^(%d%d%d%d%d%d):%d')
-				if key then
-					file_size_string = data:match('^'..key..':(%d+):')
-					local len2 = 0
-					if file_size_string then
-						len2 = #file_size_string
+				while #data > 10 do
+					key, file_size_string = data:match('^(%d%d%d%d%d%d):(%d+):')
+					if key then
+						-- file_size_string containing the http headers of file
+						local len2 = 0
+						if file_size_string then
+							len2 = #file_size_string
+						end
+						file_size = tonumber(file_size_string)
+
+						local head_len = (6+1+len2+1)
+						received_size = #data - head_len
+						if received_size >= file_size then
+							-- return all data of this file
+							responseData(key, data:sub(head_len+1, head_len+file_size))
+							-- copy the rest to left_data
+							data = data:sub(head_len+file_size+1)
+						else
+							responseData(key, data:sub(head_len+1))
+							part_len = (file_size - received_size < PART_LEN) and file_size - received_size or PART_LEN
+							break
+						end
+											
+					else
+						local key, code = data:match('^(%d%d%d%d%d%d) (%d%d%d)')
+						if key then
+							if code == '404' then
+								responseData(key, http_response('Not Found', 404, 'Not Found'))
+							elseif code == '304' then
+								responseData(key, http_response('Not Changed', 304, 'Not Changed'))
+							end
+							data = data:sub(11)
+						else
+							error('file protocol data error.')
+						end
 					end
-					file_size = tonumber(file_size_string)
-
-					local head_len = (6+1+len2+1)
-					received_size = #data - head_len
-
-					-- return file part data immediately
-					responseFileData(key, data:sub(head_len+1))
-				else
-					error('file protocol data error.')
+					left_data = data
 				end
 			end
-			
-			part_len = (file_size - received_size < PART_LEN) and file_size - received_size or PART_LEN
 
+			print('received_size, file_size', received_size, file_size)
 			-- next file
 			if received_size >= file_size then break end
 
 		end
+
+		key = nil
 			
 	end
 end
@@ -602,12 +632,15 @@ assert(thread:start(true))
 local file_thread = 
 [==[
 	local host, port = ...
-
+print('enter file thread', host, port)
 	local lgstring = require 'lgstring'
 	local posix = require 'posix'
 	local socket = require 'socket'
     -- create connection, make enter file server
+    -- here, client is a luasocket client 
 	local client = assert(socket.connect(host, port))
+	client:settimeout(0.1)
+
 	local mimetypes = require 'mime'
 
     local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
@@ -638,7 +671,7 @@ local file_thread =
 	while true do
 		
 		while true do
-			local s, errmsg, partial = client:receive(1024)
+			local s, errmsg, partial = client:receive()
 			if s or (errmsg == 'timeout' and partial and #partial > 0) then
 				reqstr = s or partial
 				break
@@ -647,9 +680,10 @@ local file_thread =
 				client = assert(socket.connect(host, port))
 			end
 		end
-		
-		local key, path, last_modified_time, max_age = unpack(lgstring.split(reqstr, ' '))
-		print(key, path, last_modified_time, max_age)
+		local key, path, last_modified_time, max_age = unpack(lgstring.split(reqstr:sub(1,-2), ' '))
+		if last_modified_time then last_modified_time = tonumber(last_modified_time) end
+		if max_age then max_age = tonumber(max_age) end
+		print('~~~in file thread', key, path, last_modified_time, max_age)
 
 		if path then
 			local file_t = posix.stat(path)
@@ -657,10 +691,11 @@ local file_thread =
 			--print(file_t)
 			local last_modified_time = last_modified_time
 			if not file_t or file_t.type == 'directory' then
-				client:send('code:404')
+				client:send(string.format('%s %s', key, 404))
 			elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
-				client:send('code:304')
+				client:send(string.format('%s %s', key, 304))
 			else
+print('ready to read file...', path)
 				local size = 0
 				if file_t then size = file_t.size end
 				local res = http_response_header(200, 'OK', {
@@ -670,20 +705,14 @@ local file_thread =
 					['cache-control'] = 'max-age='..(max_age or '0')
 				})
 				-- send header
-				client:send(res)
-				
+				client:send(string.format('%s:%s:%s', key, size+#res, res))
+				-- tangg
 				local content, s
-				local i = 0
 				while true do
 					content = posix.read(file, 4096)	
 					-- if no data read, nread is 0, not nil
 					if #content > 0 then
-						i = i + 1
-						if i == 1 then
-							client:send(string.format('%s:%s:%s', key, size, content))
-						else
-							client:send(content)
-						end
+						client:send(content)
 					else
 						break
 					end
