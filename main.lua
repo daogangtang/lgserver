@@ -121,29 +121,6 @@ local function http_response(body, code, status, headers)
     return string.format(HTTP_FORMAT, code, status, table.concat(raw, '\r\n'), body)
 end
 
-local function http_response_header(code, status, headers)
-    headers = headers or {}
-    local raw = {}
-    for k, v in pairs(headers) do
-        table.insert(raw, string.format('%s: %s', tostring(k), tostring(v)))
-    end
-
-    return string.format(HTTP_FORMAT, code, status, table.concat(raw, '\r\n'), '')
-end
-
-
-
-function findType(req)
-	local content_type
-	-- now req is the incoming request data
-	local ext = req.path:match('(%.%w+)$')
-	if ext then
-		content_type = mimetypes[ext]
-	end
-
-	return content_type or 'text/plain'
-end
-
 function regularPath(host, path)
 	local orig_path = path
 	path = host.root_dir..path
@@ -308,7 +285,14 @@ function feedfile(host, client, req)
 		path = host.root_dir..'index.html' 
 	end
 
-	local file_t = posix.stat(path)
+	local reqstr = string.format('%s %s %s', 
+								 path, 
+								 req.headers['if-modified-since'] or '', 
+								 host['max-age'] or '') 
+	
+
+
+local file_t = posix.stat(path)
 	local file = posix.open(path, posix.O_RDONLY, "664")
 	--print(file_t)
 	local last_modified_time = tonumber(req.headers['if-modified-since'])
@@ -505,8 +489,78 @@ local cb_from_thread = function (client_skt)
 end
 
 
-local server_send = socket.bind(SERVER.bind_addr, SERVER.inner_port or '12310')
+local server_send = socket.bind('127.0.0.1', '12310')
 copas.addserver(server_send, cb_from_thread)
+
+
+local cb_from_file_thread = function (client_skt)
+	local client = copas.wrap(client_skt)
+	local left = ''
+	while true do
+		local reqstr = ''
+		
+		-- may have more than 1 messages
+		while true do
+			local s, errmsg, partial = client:receive(8192)
+--			if not s and errmsg == 'closed' then end
+--			print('s, errmsg, partial', s and #s, errmsg)
+			if s then 
+				
+			end
+
+
+			if not s and errmsg == 'timeout' then 
+				if partial and #partial > 0 then
+					reqstr = reqstr .. partial
+				end
+				break
+			end 
+			reqstr = reqstr..(s or partial)
+		end
+		-- print('in thread callback', #reqstr, reqstr:sub(1,10))
+		
+		-- retreive messages
+		local msgs = {}
+		local c, l = 1, 1
+		while c < #reqstr do
+			l = reqstr:find(' ', c)
+			if not l then break end
+			
+			local msg_length = tonumber(reqstr:sub(c, l-1))
+			local msg = reqstr:sub(l+1, l+msg_length)
+			table.insert(msgs, msg)
+
+			c = l + msg_length + 1
+		end
+		
+		for _, msg in ipairs(msgs) do
+			local res = cmsgpack.unpack(msg)
+			
+			if res.meta and res.conns then
+				-- protocol define: res.conns must be a table
+				if #res.conns > 0 then
+					-- multi connections reples
+					for i, conn_id in ipairs(res.conns) do
+						response (conn_id, res)
+					end
+				else
+					-- single connection reply
+					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
+					local conn_id = res.meta.conn_id
+					-- print('in single sending...', conn_id)
+					response (conn_id, res)
+				end
+			end
+			
+		end
+	end
+end
+
+
+local server_file_send = socket.bind('127.0.0.1', '12311')
+copas.addserver(server_file_send, cb_from_file_thread)
+
+
 
 
 local server_recv = socket.bind(SERVER.bind_addr, SERVER.port)
@@ -516,7 +570,7 @@ print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
 
 -- ==========================================================
 -- another thread
-local thread_code = [[
+local thread_code = [==[
 	require 'socket'
 	require 'zmq'
 
@@ -541,10 +595,107 @@ local thread_code = [[
     end
     
     print('Client Ends.')
-]]
+]==]
 
 -- create detached child thread.
-local thread = llthreads.new(thread_code, SERVER.bind_addr, SERVER.inner_port or '12310', CHANNEL_SUB_LIST[1])
+local thread = llthreads.new(thread_code, '127.0.0.1', '12310', CHANNEL_SUB_LIST[1])
+-- start non-joinable detached child thread.
+assert(thread:start(true))
+
+
+local file_thread = [==[
+	local host, port = ...
+
+	local lgstring = require 'lgstring'
+	local posix = require 'posix'
+	local socket = require 'socket'
+    local client = assert(socket.connect(host, port))
+	local mimetypes = require 'mime'
+
+    local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
+
+	local function http_response_header(code, status, headers)
+        headers = headers or {}
+        local raw = {}
+        for k, v in pairs(headers) do
+            table.insert(raw, string.format('%s: %s', tostring(k), tostring(v)))
+        end
+
+        return string.format(HTTP_FORMAT, code, status, table.concat(raw, '\r\n'), '')
+    end
+
+    function findType(path)
+	    local content_type
+	    -- now req is the incoming request data
+	    local ext = path:match('(%.%w+)$')
+	    if ext then
+		    content_type = mimetypes[ext]
+	    end
+
+	    return content_type or 'text/plain'
+    end
+
+	local reqstr
+	-- keep this thread to server file
+	while true do
+		
+		while true do
+			local s, errmsg, partial = client:receive(1024)
+			if s or (errmsg == 'timeout' and partial and #partial > 0) then
+				reqstr = s or partial
+				break
+			elseif errmsg == 'closed' then
+				-- reconnect
+				client = assert(socket.connect(host, port))
+			end
+		end
+		
+		local path, last_modified_time, max_age = unpack(lgstring.split(reqstr, ' '))
+		print(path, last_modified_time, max_age)
+
+		if path then
+			local file_t = posix.stat(path)
+			local file = posix.open(path, posix.O_RDONLY, "664")
+			--print(file_t)
+			local last_modified_time = last_modified_time
+			if not file_t or file_t.type == 'directory' then
+				client:send('code:404')
+			elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
+				client:send('code:304')
+			else
+				local size = 0
+				if file_t then size = file_t.size end
+				local res = http_response_header(200, 'OK', {
+													 ['content-type'] = findType(path),
+													 ['content-length'] = size,
+													 ['last-modified'] = file_t.mtime,
+													 ['cache-control'] = 'max-age='..(max_age or '0')
+															})
+				-- send header
+				client:send(res)
+				local content, s
+				while true do
+					content = posix.read(file, 8192)	
+					-- if no data read, nread is 0, not nil
+					if #content > 0 then
+						s = client:send(content)
+						-- if connection is broken
+						if not s then 
+							client = assert(socket.connect(host, port))
+							client:send(content)
+						end
+					else
+						break
+					end
+				end
+				posix.close(file)
+			end
+		end
+	end	
+]==]
+
+-- create detached child thread.
+local thread = llthreads.new(file_thread, '127.0.0.1', '12311')
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
