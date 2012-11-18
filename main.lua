@@ -159,9 +159,13 @@ end
 function init_parser(req)
 	local cur	= req
 	local cb    = {}
-    local bodies = {}
+
 	function cb.on_message_begin()
-	    --print('msg begin.')
+	    cur.headers = {}
+		cur.data = {}
+		cur.bodies = {}
+		cur.meta.completed = false
+		--print('msg begin.')
     end
 
 	function cb.on_url(url)
@@ -175,16 +179,13 @@ function init_parser(req)
 	end
 
 	function cb.on_body(chunk)
-        if chunk then table.insert(bodies, chunk) end
-        -- print(chunk)
-		--cur.body = body
+        if chunk then table.insert(cur.bodies, chunk) end
 	end
 	
 	function cb.on_message_complete()
-		-- print('http parser complete')
-
-        cur.body = table.concat(bodies)
-		req.meta.completed = true
+        cur.body = table.concat(cur.bodies)
+		cur.bodies = nil
+		cur.meta.completed = true
 	end
 
 	return lhp.request(cb)
@@ -415,13 +416,15 @@ end
 local cb_from_http = function (client_skt)
 	-- client is copas wrapped object
 	local client = copas.wrap(client_skt)
-	local req = {headers={}, data={}, meta={completed = false}}
-	local key = recordConnection(client, req)
-	local parser = init_parser(req)
+	local req, key, parser
+	req = {meta={}}
+	key = recordConnection(client, req)
+	parser = init_parser(req)
 
 	-- while here, for keep-alive
 	while true do
-		local s, errmsg, partial = client:receive("*a")
+
+		local s, errmsg, partial = client:receive(8192)
 		if not s and errmsg == 'closed' then 
 		    break
 		end
@@ -430,11 +433,9 @@ local cb_from_http = function (client_skt)
 		parser:execute(reqstr)
 
 		if req.meta.completed then
-			req['method'] = parser:method()
-			req['version'] = parser:version()
+			req.method = parser:method()
+			req.version = parser:version()
 			serviceDispatcher(key)
-		else
-			client:send('invalid http request')
 		end
 	end
 
