@@ -76,7 +76,7 @@ end
 
 
 local function findHost(req) 
-	if req.headers.host then
+	if req and req.headers and req.headers.host then
 		local ask_host = req.headers.host:match('^([%w%.]+):?')
 		for i, host in ipairs(HOSTS) do
 			if host.matching and ask_host:match(host.matching..'$') then
@@ -417,7 +417,7 @@ local cb_from_http = function (client_skt)
 	-- client is copas wrapped object
 	local client = copas.wrap(client_skt)
 	local req, key, parser
-	req = {meta={}}
+	req = {headers={}, meta={}}
 	key = recordConnection(client, req)
 	parser = init_parser(req)
 
