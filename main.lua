@@ -9,6 +9,9 @@ local posix = require 'posix'
 local llthreads = require "llthreads"
 local zlib = require 'zlib'
 local CompressStream = zlib.deflate()
+local file_log_driver = require "logging.file"
+
+local logger = file_log_driver("logs/access%s.log", "%Y-%m-%d")
 
 local zmq = require"zmq"
 
@@ -163,17 +166,30 @@ end
 function init_parser(req)
 	local cur	= req
 	local cb    = {}
+	local client
 
 	function cb.on_message_begin()
 	    cur.headers = {}
 		cur.data = {}
 		cur.bodies = {}
 		cur.meta.completed = false
+
+		local conn_obj = CONNECTION_DICT[cur.meta.conn_id]
+		if conn_obj then
+			client = conn_obj[1]
+		end
 		--print('msg begin.')
     end
 
 	function cb.on_url(url)
-		print(os.date("%Y-%m-%d %H:%M:%S", os.time()), req.meta.conn_id, url)
+		local info_str = " %s, %s, %s"
+		
+		local remote_ip = client.socket:getpeername()
+		logger:info(string.format(info_str, 
+								  req.meta.conn_id, 
+								  url, 
+								  remote_ip or ''))
+
 		cur.url = url
 		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
 	end
@@ -427,6 +443,7 @@ local cb_from_http = function (client_skt)
 	key = recordConnection(client, req)
 	parser = init_parser(req)
 
+	
 	-- while here, for keep-alive
 	while true do
 
@@ -486,14 +503,10 @@ local cb_from_zmq_thread = function (client_skt)
 		
 		for _, msg in ipairs(msgs) do
 			local res = cmsgpack.unpack(msg)
-			print('--->', #res.data)
 			res.data = CompressStream(res.data, 'full')
-			print('--=>', #res.data)
 			res.headers['content-encoding'] = 'deflate'
-			--res.headers['transfer-encoding'] = 'chunked'
 
 			local res_data = http_response(res.data, res.code, res.status, res.headers)
-			--res_data = CompressStream(res_data, 'sync')
 
 			if res.meta and res.conns then
 				-- protocol define: res.conns must be a table
@@ -517,7 +530,7 @@ end
 
 local cb_from_file_thread = function (client_skt)
 	FileThreadMasterSocket = client_skt
-print('FileThreadMasterSocket', FileThreadMasterSocket)
+--print('FileThreadMasterSocket', FileThreadMasterSocket)
 	local client = copas.wrap(client_skt)
 	local left_data
 	while true do
@@ -643,15 +656,14 @@ local thread = llthreads.new(zmq_thread, '127.0.0.1', '12310', CHANNEL_SUB_LIST[
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
-print('hehe')
 local file_thread = require 'filethread'
-print('haha')
 -- create detached child thread.
 local thread = llthreads.new(file_thread, '127.0.0.1', '12311')
-print('xixi')
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
+
+os.execute('mkdir -p logs')
 
 -- while true do
 --  	copas.step()

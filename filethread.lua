@@ -80,7 +80,7 @@ return
 			else
 				local filename = path:match('/([%w%-_%.]+)$')
 				local tmpfile_t = posix.stat(tmpdir..filename)
-				print('tmpfile_t', tmpfile_t)
+				-- print('tmpfile_t', tmpfile_t)
 				local file_type = findType(path)
 
 				if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime  then
@@ -115,9 +115,9 @@ return
 					-- write tmp zip file
 					if #file_bufs > 0 and filename and COMPRESS_FILETYPE_DICT[file_type] then
 						local allcontent = table.concat(file_bufs)
-						print('--->', #allcontent)
+						-- print('--->', #allcontent)
 						allcontent = CompressStream(allcontent, 'full')
-						print('--=>', #allcontent)
+						-- print('--=>', #allcontent)
 
 						local fd = io.open(tmpdir .. filename, 'w')
 						fd:write(allcontent)
