@@ -11,7 +11,7 @@ handler_lgcms = { type="handler",
 
 server = {
     name="server1",
-    bind_addr = "0.0.0.0",
+    bind_addr = "127.0.0.1",
     port=8080,
     access_log="logs/access.log",
     error_log="logs/error.log",

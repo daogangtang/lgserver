@@ -7,12 +7,15 @@ local copas = require 'copas'
 local utils = require 'utils'
 local posix = require 'posix'
 local llthreads = require "llthreads"
+local zlib = require 'zlib'
+local CompressStream = zlib.deflate()
 
 local zmq = require"zmq"
 
 --require 'lglib'
 --p = fptable
 --p = utils.prettyPrint
+
 
 
 local CONNECTION_DICT = {}
@@ -111,6 +114,7 @@ local function http_response(body, code, status, headers)
     status = status or "OK"
     headers = headers or {}
     headers['content-type'] = headers['content-type'] or 'text/plain'
+--    if not headers['content-encoding'] then headers['content-length'] = #body end
     headers['content-length'] = #body
 
     local raw = {}
@@ -302,6 +306,7 @@ local responseData = function (conn_id, data)
 	end		
 end
 
+--[[
 local response = function (conn_id, res)
     local conn_obj = CONNECTION_DICT[conn_id]
 	if conn_obj then
@@ -309,6 +314,7 @@ local response = function (conn_id, res)
 		sendData(client, http_response(res.data, res.code, res.status, res.headers))
 	end		
 end
+--]]
 
 -- ====================================================================
 -- static file server handler
@@ -445,7 +451,7 @@ end
 local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
 	while true do
-		local reqstr = ''
+		local strs = {}
 		-- may have more than 1 messages
 		while true do
 			local s, errmsg, partial = client:receive(8192)
@@ -453,14 +459,17 @@ local cb_from_zmq_thread = function (client_skt)
 --			print('s, errmsg, partial', s and #s, errmsg)
 			if not s and errmsg == 'timeout' then 
 				if partial and #partial > 0 then
-					reqstr = reqstr .. partial
+					table.insert(strs, partial)
+					-- reqstr = reqstr .. partial
 				end
 				break
 			end 
-			reqstr = reqstr..(s or partial)
+			-- reqstr = reqstr..(s or partial)
+			table.insert(strs, s or partial)
 		end
 		-- print('in thread callback', #reqstr, reqstr:sub(1,10))
 		
+		local reqstr = table.concat(strs)
 		-- retreive messages
 		local msgs = {}
 		local c, l = 1, 1
@@ -477,20 +486,28 @@ local cb_from_zmq_thread = function (client_skt)
 		
 		for _, msg in ipairs(msgs) do
 			local res = cmsgpack.unpack(msg)
-			
+			print('--->', #res.data)
+			res.data = CompressStream(res.data, 'full')
+			print('--=>', #res.data)
+			res.headers['content-encoding'] = 'deflate'
+			--res.headers['transfer-encoding'] = 'chunked'
+
+			local res_data = http_response(res.data, res.code, res.status, res.headers)
+			--res_data = CompressStream(res_data, 'sync')
+
 			if res.meta and res.conns then
 				-- protocol define: res.conns must be a table
 				if #res.conns > 0 then
 					-- multi connections reples
 					for i, conn_id in ipairs(res.conns) do
-						response (conn_id, res)
+						responseData (conn_id, res_data)
 					end
 				else
 					-- single connection reply
 					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
 					local conn_id = res.meta.conn_id
 					-- print('in single sending...', conn_id)
-					response (conn_id, res)
+					responseData (conn_id, res_data)
 				end
 			end
 			
@@ -585,7 +602,10 @@ print('FileThreadMasterSocket', FileThreadMasterSocket)
 							data = data:sub(11)
 							-- key = nil
 						else
-							error('file protocol data error.')
+							print('meet this case, left_data len is shorter than a valid file.')
+							left_data = data
+							break
+							-- error('file protocol data error.')
 						end
 					end
 					left_data = data
@@ -600,8 +620,6 @@ print('FileThreadMasterSocket', FileThreadMasterSocket)
 		end
 
 		key = nil
-		
-			
 	end
 end
 
@@ -619,136 +637,18 @@ print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
 
 -- ==========================================================
 -- another thread
-local zmq_thread = [==[
-	require 'socket'
-	require 'zmq'
-
-    local host, port, channel_sub_addr = ...
---  print(host, port, channel_sub_addr)
-
-    local client = assert(socket.connect(host, port))
-    local ctx = zmq.init(1)
-    local channel_sub = ctx:socket(zmq.SUB)
-	channel_sub:setopt(zmq.SUBSCRIBE, "")
-	channel_sub:connect(channel_sub_addr)
-		
-    while true do
-		local msg, err = channel_sub:recv()   -- block wait
-		-- print('return msg...', #msg)
-	
-		local s, errmsg = client:send(#msg..' '..msg)
-		if not s and errmsg == 'closed' then
-			client = assert(socket.connect(host, port))
-			client:send(#msg..' '..msg)
-		end
-    end
-    
-    print('Client Ends.')
-]==]
-
+local zmq_thread = require 'zmqthread'
 -- create detached child thread.
 local thread = llthreads.new(zmq_thread, '127.0.0.1', '12310', CHANNEL_SUB_LIST[1])
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
-
-local file_thread = 
-[==[
-	local host, port = ...
-print('enter file thread', host, port)
-	local lgstring = require 'lgstring'
-	local posix = require 'posix'
-	local socket = require 'socket'
-    -- create connection, make enter file server
-    -- here, client is a luasocket client 
-	local client = assert(socket.connect(host, port))
-	client:settimeout(0.1)
-
-	local mimetypes = require 'mime'
-
-    local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
-
-	local function http_response_header(code, status, headers)
-        headers = headers or {}
-        local raw = {}
-        for k, v in pairs(headers) do
-            table.insert(raw, string.format('%s: %s', tostring(k), tostring(v)))
-        end
-
-        return string.format(HTTP_FORMAT, code, status, table.concat(raw, '\r\n'), '')
-    end
-
-    function findType(path)
-	    local content_type
-	    -- now req is the incoming request data
-	    local ext = path:match('(%.%w+)$')
-	    if ext then
-		    content_type = mimetypes[ext]
-	    end
-
-	    return content_type or 'text/plain'
-    end
-
-	local reqstr
-	-- keep this thread to server file
-	while true do
-		
-		while true do
-			local s, errmsg, partial = client:receive()
-			if s or (errmsg == 'timeout' and partial and #partial > 0) then
-				reqstr = s or partial
-				break
-			elseif errmsg == 'closed' then
-				-- reconnect
-				client = assert(socket.connect(host, port))
-			end
-		end
-		local key, path, last_modified_time, max_age = unpack(lgstring.split(reqstr:sub(1,-2), ' '))
-		if last_modified_time then last_modified_time = tonumber(last_modified_time) end
-		if max_age then max_age = tonumber(max_age) end
---		print('~~~in file thread', key, path, last_modified_time, max_age)
-
-		if path then
-			local file_t = posix.stat(path)
-			local file = posix.open(path, posix.O_RDONLY, "664")
-			--print(file_t)
-			local last_modified_time = last_modified_time
-			if not file_t or file_t.type == 'directory' then
-				client:send(string.format('%s %s', key, 404))
-			elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
-				client:send(string.format('%s %s', key, 304))
-			else
---print('ready to read file...', path)
-				local size = 0
-				if file_t then size = file_t.size end
-				local res = http_response_header(200, 'OK', {
-					['content-type'] = findType(path),
-					['content-length'] = size,
-					['last-modified'] = file_t.mtime,
-					['cache-control'] = 'max-age='..(max_age or '0')
-				})
-				-- send header
-				client:send(string.format('%s:%s:%s', key, size+#res, res))
-				-- tangg
-				local content, s
-				while true do
-					content = posix.read(file, 4096)	
-					-- if no data read, nread is 0, not nil
-					if #content > 0 then
-						client:send(content)
-					else
-						break
-					end
-				end
-				posix.close(file)
-			end
-		end
-	end	
-
-]==]
-
+print('hehe')
+local file_thread = require 'filethread'
+print('haha')
 -- create detached child thread.
 local thread = llthreads.new(file_thread, '127.0.0.1', '12311')
+print('xixi')
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 

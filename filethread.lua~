@@ -1,0 +1,96 @@
+
+return = 
+[==[
+	local host, port = ...
+print('enter file thread', host, port)
+	local lgstring = require 'lgstring'
+	local posix = require 'posix'
+	local socket = require 'socket'
+    -- create connection, make enter file server
+    -- here, client is a luasocket client 
+	local client = assert(socket.connect(host, port))
+	client:settimeout(0.01)
+
+	local mimetypes = require 'mime'
+
+    local HTTP_FORMAT = 'HTTP/1.1 %s %s\r\n%s\r\n\r\n%s'
+
+	local function http_response_header(code, status, headers)
+        headers = headers or {}
+        local raw = {}
+        for k, v in pairs(headers) do
+            table.insert(raw, string.format('%s: %s', tostring(k), tostring(v)))
+        end
+
+        return string.format(HTTP_FORMAT, code, status, table.concat(raw, '\r\n'), '')
+    end
+
+    function findType(path)
+	    local content_type
+	    -- now req is the incoming request data
+	    local ext = path:match('(%.%w+)$')
+	    if ext then
+		    content_type = mimetypes[ext]
+	    end
+
+	    return content_type or 'text/plain'
+    end
+
+	local reqstr
+	-- keep this thread to server file
+	while true do
+		
+		while true do
+			local s, errmsg, partial = client:receive()
+			if s or (errmsg == 'timeout' and partial and #partial > 0) then
+				reqstr = s or partial
+				break
+			elseif errmsg == 'closed' then
+				-- reconnect
+				client = assert(socket.connect(host, port))
+			end
+		end
+		local key, path, last_modified_time, max_age = unpack(lgstring.split(reqstr:sub(1,-2), ' '))
+		if last_modified_time then last_modified_time = tonumber(last_modified_time) end
+		if max_age then max_age = tonumber(max_age) end
+--		print('~~~in file thread', key, path, last_modified_time, max_age)
+
+		if path then
+			local file_t = posix.stat(path)
+			local file = posix.open(path, posix.O_RDONLY, "664")
+			--print(file_t)
+			local last_modified_time = last_modified_time
+			if not file_t or file_t.type == 'directory' then
+				client:send(string.format('%s %s', key, 404))
+			elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
+				client:send(string.format('%s %s', key, 304))
+			else
+--print('ready to read file...', path)
+				local size = 0
+				if file_t then size = file_t.size end
+				local res = http_response_header(200, 'OK', {
+					['content-type'] = findType(path),
+					['content-length'] = size,
+					['last-modified'] = file_t.mtime,
+					['cache-control'] = 'max-age='..(max_age or '0')
+				})
+				-- send header
+				client:send(string.format('%s:%s:%s', key, size+#res, res))
+				-- tangg
+				local content, s
+				while true do
+					content = posix.read(file, 4096)	
+					-- if no data read, nread is 0, not nil
+					if #content > 0 then
+						client:send(content)
+					else
+						break
+					end
+				end
+				posix.close(file)
+			end
+		end
+	end	
+
+]==]
+
