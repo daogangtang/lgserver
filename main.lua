@@ -11,7 +11,8 @@ local zlib = require 'zlib'
 local CompressStream = zlib.deflate()
 local file_log_driver = require "logging.file"
 
-local logger = file_log_driver("logs/access%s.log", "%Y-%m-%d")
+local log_dir = '/var/tmp/logs/'
+local logger = file_log_driver(log_dir.."lgserver_access_%s.log", "%Y-%m-%d")
 
 local zmq = require"zmq"
 
@@ -663,7 +664,7 @@ local thread = llthreads.new(file_thread, '127.0.0.1', '12311')
 assert(thread:start(true))
 
 
-os.execute('mkdir -p logs')
+os.execute('mkdir -p ' .. log_dir)
 
 -- while true do
 --  	copas.step()
