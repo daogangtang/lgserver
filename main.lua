@@ -207,6 +207,11 @@ function init_parser(req)
         cur.body = table.concat(cur.bodies)
 		cur.bodies = nil
 		cur.meta.completed = true
+
+		local user_agent = req.headers['user-agent']
+		if user_agent:find('MSIE') or user_agent:find('Trident') then
+			req.meta.isie = 'ie'
+		end
 	end
 
 	return lhp.request(cb)
@@ -350,11 +355,12 @@ function feedfile(host, key, client, req)
 	local params = {}
 	table.insert(params, key)
 	table.insert(params, path)
-	table.insert(params, req.headers['if-modified-since'])
-	table.insert(params, host['max-age'])
+	table.insert(params, req.headers['if-modified-since'] or 'nil')
+	table.insert(params, host['max-age'] or 'nil')
+	table.insert(params, req.meta.isie or 'nil')
 	table.insert(params, '\n')
 
-	local reqstr = table.concat(params, ' ')
+	local reqstr = table.concat(params, '~')
 	-- send parameters to file thread
 	-- and return immediately
 	FileThreadMasterSocket:send(reqstr)
@@ -454,6 +460,7 @@ local cb_from_http = function (client_skt)
 		end
 
 		local reqstr = s or partial
+--print(reqstr)
 		parser:execute(reqstr)
 
 		if req.meta.completed then
@@ -504,8 +511,14 @@ local cb_from_zmq_thread = function (client_skt)
 		
 		for _, msg in ipairs(msgs) do
 			local res = cmsgpack.unpack(msg)
-			res.data = CompressStream(res.data, 'full')
-			res.headers['content-encoding'] = 'deflate'
+			if res.meta.isie then
+				--print('this is ie...')
+				--res.data = '\x78\x9c'..res.data 
+				--res.data = res.data:sub(3)
+			else
+				res.data = CompressStream(res.data, 'full')
+				res.headers['content-encoding'] = 'deflate'
+			end
 
 			local res_data = http_response(res.data, res.code, res.status, res.headers)
 

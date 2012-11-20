@@ -64,10 +64,18 @@ return
 				client = assert(socket.connect(host, port))
 			end
 		end
-		local key, path, last_modified_time, max_age = unpack(lgstring.split(reqstr:sub(1,-2), ' '))
-		if last_modified_time then last_modified_time = tonumber(last_modified_time) end
+--print(reqstr)
+		local key, path, last_modified_time, max_age, isie = unpack(lgstring.split(reqstr:sub(1,-2), '~'))
+		if last_modified_time and type(tonumber(last_modfied_time)) == 'number' then 
+last_modified_time = tonumber(last_modified_time) 
+else
+last_modified_time = 0
+end
+if max_age == 'nil' then max_age = nil end
+if isie == 'nil' then isie = nil end
+
 		if max_age then max_age = tonumber(max_age) end
---		print('~~~in file thread', key, path, last_modified_time, max_age)
+--		print('~~~in file thread', key, path, last_modified_time, max_age, isie)
 
 		if path then
 			local file_t = posix.stat(path)
@@ -82,8 +90,9 @@ return
 				local tmpfile_t = posix.stat(tmpdir..filename)
 				-- print('tmpfile_t', tmpfile_t)
 				local file_type = findType(path)
-print('file_type', file_type)
-				if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime  then
+--print('file_type', file_type)
+				if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime or isie then
+--print('isie', isie)
 					-- read new file
 					local file = posix.open(path, posix.O_RDONLY, "664")
 					--print('ready to read file...', path)
@@ -113,7 +122,7 @@ print('file_type', file_type)
 					posix.close(file)
 					
 					-- write tmp zip file
-					if #file_bufs > 0 and filename and COMPRESS_FILETYPE_DICT[file_type] then
+					if #file_bufs > 0 and filename and COMPRESS_FILETYPE_DICT[file_type] and not isie then
 						local allcontent = table.concat(file_bufs)
 						-- print('--->', #allcontent)
 						allcontent = CompressStream(allcontent, 'full')
