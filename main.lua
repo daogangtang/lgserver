@@ -515,6 +515,8 @@ local cb_from_zmq_thread = function (client_skt)
 				--print('this is ie...')
 				--res.data = '\x78\x9c'..res.data 
 				--res.data = res.data:sub(3)
+			elseif res.headers['content-type'] = 'application/x-javascript' then
+
 			else
 				res.data = CompressStream(res.data, 'full')
 				res.headers['content-encoding'] = 'deflate'
