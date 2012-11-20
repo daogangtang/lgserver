@@ -671,6 +671,7 @@ os.execute('mkdir -p ' .. log_dir)
 --  	-- processing for other events from your system here
 -- end
 
+print('starting server....')
 -- main loop
 copas.loop()
 

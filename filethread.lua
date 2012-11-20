@@ -82,7 +82,7 @@ return
 				local tmpfile_t = posix.stat(tmpdir..filename)
 				-- print('tmpfile_t', tmpfile_t)
 				local file_type = findType(path)
-
+print('file_type', file_type)
 				if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime  then
 					-- read new file
 					local file = posix.open(path, posix.O_RDONLY, "664")
