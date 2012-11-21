@@ -387,12 +387,12 @@ function feedfile(host, client, req)
 
 	local file_t = posix.stat(path)
 	--print(file_t)
-	local last_modified_time
+	local last_modified_time = req.headers['if-modified-since']
 	local isie = req.meta.isie
-	if isie then
-		last_modified_time = changeGMT2Timestamp(req.headers['if-modified-since'] or '')
+	if isie and last_modified_time then
+		last_modified_time = changeGMT2Timestamp(last_modified_time)
 	else
-		last_modified_time = tonumber(req.headers['if-modified-since'] or '')
+		last_modified_time = tonumber(last_modified_time)
 	end
 
 	if not file_t or file_t.type == 'directory' then
