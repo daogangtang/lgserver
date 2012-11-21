@@ -363,7 +363,7 @@ local tmpdir = '/tmp/lgserverzipfiles/'
 
 local function changeGMT2Timestamp (gmt_date)
 	local p="%a+, (%d+) (%a+) (%d+) (%d+):(%d+):(%d+) GMT"
-	local day,month,year,hour,min,sec = s:match(p)
+	local day,month,year,hour,min,sec = gmt_date:match(p)
 	local MON = {Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12}
 	local month = MON[month]
 	local offset = os.time()-os.time(os.date("!*t"))
@@ -386,9 +386,9 @@ function feedfile(host, client, req)
 	local last_modified_time
 	local isie = req.meta.isie
 	if isie then
-		last_modified_time = changeGMT2Timestamp(req.headers['if-modified-since'])
+		last_modified_time = changeGMT2Timestamp(req.headers['if-modified-since'] or '')
 	else
-		last_modified_time = tonumber(req.headers['if-modified-since'])
+		last_modified_time = tonumber(req.headers['if-modified-since'] or '')
 	end
 
 	if not file_t or file_t.type == 'directory' then
