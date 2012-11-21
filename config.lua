@@ -1,13 +1,11 @@
-static_mmshuxia = { type="dir" }
+static_lgcms = { type="dir" }
 
 static_default = { type="dir" }
 
 
-handler_mmshuxia = { type="handler", 
-		sender_id="mmshuxia",
+handler_lgcms = { type="handler", 
 		send_spec='tcp://127.0.0.1:1234',
-        send_ident='mmshuxia',
-        recv_spec='tcp://127.0.0.1:1235', 
+		recv_spec='tcp://127.0.0.1:1235', 
 		recv_ident=''}
 
 
@@ -17,19 +15,19 @@ server = {
     port=8080,
     access_log="logs/access.log",
     error_log="logs/error.log",
-    default_host="mmshuxia.com",
+    default_host="lgcms",
     hosts = { 
         {       
-			name="mmshuxia.com",
-			matching="mmshuxia.com",
-			root_dir = "/home/xen/workspace/lgserver/tmp/",
+			name="lgcms",
+			--matching="lgcms",
+			root_dir = "/home/xen/workspace/lgcms_tg/",
 
 			-- ['max-age'] = 60,
 			routes={
-				--		['/'] = static_mmshuxia,
-				['/'] = handler_mmshuxia,
-				['/media/'] = static_mmshuxia,
-				['/favicon.ico'] = static_mmshuxia
+				--		['/'] = static_lgcms,
+				['/'] = handler_lgcms,
+				['/media/'] = static_lgcms,
+				['/favicon.ico'] = static_lgcms
 			}
         },
 

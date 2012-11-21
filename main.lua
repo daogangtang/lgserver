@@ -7,6 +7,12 @@ local copas = require 'copas'
 local utils = require 'utils'
 local posix = require 'posix'
 local llthreads = require "llthreads"
+local zlib = require 'zlib'
+local CompressStream = zlib.deflate()
+local file_log_driver = require "logging.file"
+
+local log_dir = '/var/tmp/logs/'
+local logger = file_log_driver(log_dir.."lgserver_access_%s.log", "%Y-%m-%d")
 
 local zmq = require"zmq"
 
@@ -17,7 +23,7 @@ local zmq = require"zmq"
 
 local CONNECTION_DICT = {}
 local CHANNEL_PUSH_DICT = {}
-local CHANNEL_SUB_DICT = {}
+local CHANNEL_SUB_LIST = {}
 
 
 local config_file = arg[1] or './config.lua'
@@ -54,7 +60,8 @@ for i, host in ipairs(HOSTS) do
 			local send_spec = processor.send_spec
 			local recv_spec = processor.recv_spec
 			-- avoid duplicated bindings
-			if not CHANNEL_PUSH_DICT[send_spec] and not CHANNEL_SUB_DICT[recv_spec] then
+			--if not CHANNEL_PUSH_DICT[send_spec] and not CHANNEL_SUB_DICT[recv_spec] then
+			if not CHANNEL_PUSH_DICT[send_spec] then
 				-- bind push channels
 				local channel_push = ctx:socket(zmq.PUSH)
 				channel_push:bind(processor.send_spec)
@@ -65,7 +72,7 @@ for i, host in ipairs(HOSTS) do
 				
 				-- record all zmq channels
 				CHANNEL_PUSH_DICT[processor.send_spec] = channel_push
-				--CHANNEL_SUB_DICT[processor.recv_spec] = channel_sub
+				table.insert(CHANNEL_SUB_LIST, processor.recv_spec)
 			end
 		--elseif processor.type == 'dir' then
 		end
@@ -75,16 +82,16 @@ end
 
 
 local function findHost(req) 
-	if req.headers.host then
+	if req and req.headers and req.headers.host then
 		local ask_host = req.headers.host:match('^([%w%.]+):?')
 		for i, host in ipairs(HOSTS) do
 			if host.matching and ask_host:match(host.matching..'$') then
 				return host
 			end
 		end
-	else
-		return nil
 	end
+
+	return nil
 end
 
 function findHandle(host, req)
@@ -132,10 +139,10 @@ end
 
 
 
-function findType(req)
+function findType(path)
 	local content_type
 	-- now req is the incoming request data
-	local ext = req.path:match('(%.%w+)$')
+	local ext = path:match('(%.%w+)$')
 	if ext then
 		content_type = mimetypes[ext]
 	end
@@ -181,13 +188,30 @@ end
 function init_parser(req)
 	local cur	= req
 	local cb    = {}
-    local bodies = {}
+	local client
+
 	function cb.on_message_begin()
-	    --print('msg begin.')
+	    cur.headers = {}
+		cur.data = {}
+		cur.bodies = {}
+		cur.meta.completed = false
+
+		local conn_obj = CONNECTION_DICT[cur.meta.conn_id]
+		if conn_obj then
+			client = conn_obj[1]
+		end
+		--print('msg begin.')
     end
 
 	function cb.on_url(url)
-		print(os.date("%Y-%m-%d %H:%M:%S", os.time()), req.meta.conn_id, url)
+		local info_str = " %s, %s, %s"
+		
+		local remote_ip = client.socket:getpeername()
+		logger:info(string.format(info_str, 
+								  req.meta.conn_id, 
+								  url, 
+								  remote_ip or ''))
+
 		cur.url = url
 		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
 	end
@@ -197,16 +221,18 @@ function init_parser(req)
 	end
 
 	function cb.on_body(chunk)
-        if chunk then table.insert(bodies, chunk) end
-        -- print(chunk)
-		--cur.body = body
+        if chunk then table.insert(cur.bodies, chunk) end
 	end
 	
 	function cb.on_message_complete()
-		-- print('http parser complete')
+        cur.body = table.concat(cur.bodies)
+		cur.bodies = nil
+		cur.meta.completed = true
 
-        cur.body = table.concat(bodies)
-		req.meta.completed = true
+		local user_agent = req.headers['user-agent']
+		if user_agent:find('MSIE') or user_agent:find('Trident') then
+			req.meta.isie = 'ie'
+		end
 	end
 
 	return lhp.request(cb)
@@ -246,12 +272,12 @@ end
 
 -- client is copas object
 local function sendData (client, data)
-	if client then
-		local status = client:send(data)
-		if not status then return false end
+	local s = client:send(data)
+	if s then 
+		return true 
+	else
+		return false
 	end
-	
-	return true
 end
 
 
@@ -291,34 +317,75 @@ local cleanConnection = function (key, client, channel_push)
 			}
 			sendPushZmqMsg(channel_push, disconnect_msg)
 		end
-	end
 end
+
+local function getPushChannel (processor)
+--	return CHANNEL_PUSH_DICT[processor.send_spec], CHANNEL_SUB_DICT[processor.recv_spec]
+	return CHANNEL_PUSH_DICT[processor.send_spec]
+end
+
+
+local function findPushChannel (req)
+
+	local host = findHost(req)
+	if not host then
+		host = HOSTS[1]
+	end
+
+	local _, processor = findHandle(host, req)
+    local channel_push
+    if processor then
+	    channel_push = CHANNEL_PUSH_DICT[processor.send_spec]
+    end
+
+	return channel_push
+end
+
+local responseData = function (conn_id, data)
+    local conn_obj = CONNECTION_DICT[conn_id]
+	if conn_obj then
+		local client = conn_obj[1]
+		client:send(data)
+	end		
+end
+
 
 -- ====================================================================
 -- static file server handler
+local COMPRESS_FILETYPE_DICT = {
+	['text/css'] = true,
+	['application/x-javascript'] = true,
+	['text/html'] = true,
+	['text/plain'] = true
+}
+
+local tmpdir = '/tmp/lgserverzipfiles/'
+
 function feedfile(host, client, req)
 	local path, err = regularPath(host, req.path)
 	if not path then
-		print(err)
+		logger:info(err)
 		sendData(client, http_response('Forbidden', 403, 'Forbidden'))
-		--cleanConnection(req.meta.conn_id, client)
-		-- need to close
 		return false
 	elseif path == host.root_dir then 
-		path = host.root_dir..'index.html' 
+		path = host.root_dir..'/static_default/index.html' 
 	end
 
 	local file_t = posix.stat(path)
-	local file = posix.open(path, posix.O_RDONLY, "664")
 	--print(file_t)
 	local last_modified_time = tonumber(req.headers['if-modified-since'])
 	if not file_t or file_t.type == 'directory' then
-		sendData(client, http_response('Not Found', 404, 'Not Found', {
-										   ['content-type'] = 'text/plain'
-																	  }))
+
+		sendData(client, http_response('Not Found', 404, 'Not Found'))
+
 	elseif last_modified_time and file_t.mtime and last_modified_time >= file_t.mtime then
+
 		sendData(client, http_response('Not Changed', 304, 'Not Changed'))
+
 	else
+--[[
+		local file = posix.open(path, posix.O_RDONLY, "664")
+
 		local size = 0
 		if file_t then size = file_t.size end
 		local res = http_response_header(200, 'OK', {
@@ -344,41 +411,94 @@ function feedfile(host, client, req)
 			end
 		end
 		posix.close(file)
+--]]	
+--------------------------------------------
+
+		local filename = path:match('/([%w%-_%.]+)$')
+		print('filename', filename)
+		local tmpfile_t = posix.stat(tmpdir..filename)
+		-- print('tmpfile_t', tmpfile_t)
+		local file_type = findType(path)
+		print('file_type', file_type)
+		if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime or isie then
+			-- read new file
+			local file = posix.open(path, posix.O_RDONLY, "664")
+			local res = http_response_header(200, 'OK', {
+												 ['content-type'] = file_type,
+												 ['content-length'] = file_t.size,
+												 ['last-modified'] = file_t.mtime,
+												 ['cache-control'] = 'max-age='..(max_age or '0')
+														})
+			-- send header
+			sendData(client, res)
+			-- tangg
+			local content, s
+			local file_bufs = {}
+			while true do
+				content = posix.read(file, 8192)	
+				-- if no data read, nread is 0, not nil
+				if #content > 0 then
+					s = sendData(client, content)
+					if not s then break end
+
+					table.insert(file_bufs, content)
+					-- switch to another coroutine
+					client:next()
+				else
+					break
+				end
+			end
+			posix.close(file)
+			print('finish send file')	
+			-- write tmp zip file
+			if #file_bufs > 0 and filename and COMPRESS_FILETYPE_DICT[file_type] and not isie then
+				local allcontent = table.concat(file_bufs)
+				-- print('--->', #allcontent)
+				allcontent = CompressStream(allcontent, 'full')
+				-- print('--=>', #allcontent)
+
+				local fd = io.open(tmpdir .. filename, 'w')
+				fd:write(allcontent)
+				fd:close()
+			end
+		else
+			print('enter zip file read')
+			-- read buffed zip file
+			local file = posix.open(tmpdir..filename, posix.O_RDONLY, "664")
+			--print('ready to read file...', path)
+			local res = http_response_header(200, 'OK', {
+												 ['content-type'] = file_type,
+												 ['content-length'] = tmpfile_t.size,
+												 ['last-modified'] = tmpfile_t.mtime,
+												 ['content-encoding'] = 'deflate',
+												 ['cache-control'] = 'max-age='..(max_age or '0')
+														})
+			-- send header
+			print('send zip file headers')
+			sendData(client, res)
+
+			-- tangg
+			local content, s
+			while true do
+				content = posix.read(file, 8192)	
+				-- if no data read, nread is 0, not nil
+				if #content > 0 then
+					s = sendData(client, content)
+					if not s then break end
+				else
+					break
+				end
+			end
+			posix.close(file)
+			print('over send zip file.')	
+
+		end
 	end
 	
 	-- here, we use one connection to serve one file
 	-- cleanConnection(req.meta.conn_id, client)
 end
 
-local function getPushChannel (processor)
---	return CHANNEL_PUSH_DICT[processor.send_spec], CHANNEL_SUB_DICT[processor.recv_spec]
-	return CHANNEL_PUSH_DICT[processor.send_spec]
-end
-
-
-local function findPushChannel (req)
-
-	local host = findHost(req)
-	if not host then
-		host = HOSTS[1]
-	end
-
-	local _, processor = findHandle(host, req)
-    local channel_push
-    if processor then
-	    channel_push = CHANNEL_PUSH_DICT[processor.send_spec]
-    end
-
-	return channel_push
-end
-
-local response = function (conn_id, res)
-    local conn_obj = CONNECTION_DICT[conn_id]
-	if obj then
-		local client = conn_obj[1]
-		sendData(client, http_response(res.data, res.code, res.status, res.headers))
-	end		
-end
 
 local handlerProcessing = function (processor, client, req)
 	
@@ -399,59 +519,24 @@ function serviceDispatcher(key)
 	local pattern, handle_t = findHandle(host, req)
 	if pattern then
 		if handle_t.type == 'dir' then
+
 			feedfile(host, client, req)
 
 		elseif handle_t.type == 'handler' then
+
 			handlerProcessing(handle_t, client, req)
 
 		end
 	else
-		-- root_dir(req.path, '404 Not Found.')
-		sendData(client, http_response('Not Found', 404, 'Not Found', {
-			['content-type'] = 'text/plain'
-		}))
+		sendData(client, http_response('Not Found', 404, 'Not Found'))
 	end
 end
 
--- client_skt: tcp connection to browser
-local cb_from_http = function (client_skt)
-	-- client is copas wrapped object
+
+local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
-	local req = {headers={}, data={}, meta={completed = false}}
-	local key = recordConnection(client, req)
-	local parser = init_parser(req)
-
-	-- while here, for keep-alive
 	while true do
-		local s, errmsg, partial = client:receive("*a")
-		if not s and errmsg == 'closed' then 
-		    break
-		end
-
-		local reqstr = s or partial
-		parser:execute(reqstr)
-
-		if req.meta.completed then
-			req['method'] = parser:method()
-			req['version'] = parser:version()
-			serviceDispatcher(key)
-		else
-			client:send('invalid http request')
-		end
-	end
-
-    cleanConnection (key, client, findPushChannel(req))
-
-end
-
-
-
-local cb_from_thread = function (client_skt)
-	local client = copas.wrap(client_skt)
-	local left = ''
-	while true do
-		local reqstrs = {}
-		
+		local strs = {}
 		-- may have more than 1 messages
 		while true do
 			local s, errmsg, partial = client:receive(8192)
@@ -459,17 +544,17 @@ local cb_from_thread = function (client_skt)
 --			print('s, errmsg, partial', s and #s, errmsg)
 			if not s and errmsg == 'timeout' then 
 				if partial and #partial > 0 then
-					table.insert(reqstrs, partial)
-					--reqstr = reqstr .. partial
+					table.insert(strs, partial)
+					-- reqstr = reqstr .. partial
 				end
 				break
 			end 
 			-- reqstr = reqstr..(s or partial)
-			table.insert(reqstrs, (s or partial))
+			table.insert(strs, s or partial)
 		end
---		print('in thread callback', #reqstr, reqstr:sub(1,10))
+		-- print('in thread callback', #reqstr, reqstr:sub(1,10))
 		
-		local reqstr = table.concat(reqstrs)
+		local reqstr = table.concat(strs)
 		-- retreive messages
 		local msgs = {}
 		local c, l = 1, 1
@@ -483,23 +568,36 @@ local cb_from_thread = function (client_skt)
 
 			c = l + msg_length + 1
 		end
-		
+	
 		for _, msg in ipairs(msgs) do
 			local res = cmsgpack.unpack(msg)
-			
+			if res.meta.isie then
+				--print('this is ie...')
+				--res.data = '\x78\x9c'..res.data 
+				--res.data = res.data:sub(3)
+			elseif res.headers['content-type'] == 'application/json' or res.headers['content-type'] == 'application/x-javascript' then
+
+			else
+				res.data = CompressStream(res.data, 'full')
+				res.headers['content-encoding'] = 'deflate'
+			end
+
+			local res_data = http_response(res.data, res.code, res.status, res.headers)
 			if res.meta and res.conns then
 				-- protocol define: res.conns must be a table
 				if #res.conns > 0 then
 					-- multi connections reples
 					for i, conn_id in ipairs(res.conns) do
-						response (conn_id, res)
+						logger:debug('Ready to multi response '..conn_id )
+						responseData (conn_id, res_data)
 					end
 				else
 					-- single connection reply
 					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
 					local conn_id = res.meta.conn_id
-					--print('in single sending...', conn_id)
-					response (conn_id, res)
+					logger:debug('Ready to single response '..conn_id )
+					-- print('in single sending...', conn_id)
+					responseData (conn_id, res_data)
 				end
 			end
 			
@@ -508,55 +606,62 @@ local cb_from_thread = function (client_skt)
 end
 
 
-local server_send = socket.bind(SERVER.bind_addr, SERVER.inner_port or '12310')
-copas.addserver(server_send, cb_from_thread)
+-- client_skt: tcp connection to browser
+local cb_from_http = function (client_skt)
+	-- client is copas wrapped object
+	local client = copas.wrap(client_skt)
+	local req, key, parser
+	req = {headers={}, meta={}}
+	key = recordConnection(client, req)
+	parser = init_parser(req)
 
+	-- while here, for keep-alive
+	while true do
 
-local server_recv = socket.bind(SERVER.bind_addr, SERVER.port)
-copas.addserver(server_recv, cb_from_http)
-print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
+		local s, errmsg, partial = client:receive(8192)
+		if not s and errmsg == 'closed' then 
+		    break
+		end
+
+		local reqstr = s or partial
+		parser:execute(reqstr)
+
+		if req.meta.completed then
+			req.method = parser:method()
+			req.version = parser:version()
+			serviceDispatcher(key)
+		end
+	end
+
+    cleanConnection (key, client, findPushChannel(req))
+
+end
 
 
 -- ==========================================================
 -- another thread
-local thread_code = [[
-	require 'socket'
-	require 'zmq'
-
-    local host, port = ...
-				
-    local client = assert(socket.connect(host, port))
-    local ctx = zmq.init(1)
-    local channel_sub = ctx:socket(zmq.SUB)
-	channel_sub:setopt(zmq.SUBSCRIBE, "")
-	channel_sub:connect('tcp://'..host..':'..port)
-		
-    while true do
-		local msg, err = channel_sub:recv()   -- block wait
-		-- print('return msg...', #msg)
-	
-		local s, errmsg = client:send(#msg..' '..msg)
-		if not s and errmsg == 'closed' then
-			client = assert(socket.connect(host, port))
-			client:send(#msg..' '..msg)
-		end
-    end
-    
-    print('Client Ends.')
-]]
-
+local zmq_thread = require 'zmqthread'
 -- create detached child thread.
-local thread = llthreads.new(thread_code, SERVER.bind_addr, SERVER.inner_port)
+local thread = llthreads.new(zmq_thread, '127.0.0.1', '12310', CHANNEL_SUB_LIST[1])
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
+local zmq_server = socket.bind('127.0.0.1', '12310')
+copas.addserver(zmq_server, cb_from_zmq_thread)
 
+local main_server = socket.bind(SERVER.bind_addr, SERVER.port)
+copas.addserver(main_server, cb_from_http)
+print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
+
+
+os.execute('mkdir -p ' .. tmpdir)
+os.execute('mkdir -p ' .. log_dir)
 -- while true do
--- 	print('-------------------------------------------------')
 --  	copas.step()
 --  	-- processing for other events from your system here
 -- end
 
 -- main loop
+print('starting server....')
 copas.loop()
 
