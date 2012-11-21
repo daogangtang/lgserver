@@ -361,6 +361,16 @@ local COMPRESS_FILETYPE_DICT = {
 
 local tmpdir = '/tmp/lgserverzipfiles/'
 
+local function changeGMT2Timestamp (gmt_date)
+	local p="%a+, (%d+) (%a+) (%d+) (%d+):(%d+):(%d+) GMT"
+	local day,month,year,hour,min,sec = s:match(p)
+	local MON = {Jan=1,Feb=2,Mar=3,Apr=4,May=5,Jun=6,Jul=7,Aug=8,Sep=9,Oct=10,Nov=11,Dec=12}
+	local month = MON[month]
+	local offset = os.time()-os.time(os.date("!*t"))
+	local timestamp = os.time({day=day,month=month,year=year,hour=hour,min=min,sec=sec}) + offset
+	return timestamp
+end
+
 function feedfile(host, client, req)
 	local path, err = regularPath(host, req.path)
 	if not path then
@@ -373,7 +383,14 @@ function feedfile(host, client, req)
 
 	local file_t = posix.stat(path)
 	--print(file_t)
-	local last_modified_time = tonumber(req.headers['if-modified-since'])
+	local last_modified_time
+	local isie = req.meta.isie
+	if isie then
+		last_modified_time = changeGMT2Timestamp(req.headers['if-modified-since'])
+	else
+		last_modified_time = tonumber(req.headers['if-modified-since'])
+	end
+
 	if not file_t or file_t.type == 'directory' then
 
 		sendData(client, http_response('Not Found', 404, 'Not Found'))
