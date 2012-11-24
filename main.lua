@@ -305,18 +305,18 @@ local recordConnection = function (client, req)
 end
 
 
-local cleanConnection = function (key, client, channel_push)
-	--if CONNECTION_DICT[key] and CONNECTION_DICT[key][1] == client then
-		CONNECTION_DICT[key] = nil
-		client.socket:close()
+local cleanConnection = function (key, client)
+	CONNECTION_DICT[key] = nil
 
-		if channel_push then
-			-- send disconnect msg to bamboo handler
-			local disconnect_msg = {
-				meta = {type = 'disconnect', conn_id = key}
-			}
-			sendPushZmqMsg(channel_push, disconnect_msg)
-		end
+	-- send disconnect msg to bamboo handler
+	local disconnect_msg = {
+		meta = {type = 'disconnect', conn_id = key}
+	}
+
+    for key, chan in pairs(CHANNEL_PUSH_DICT) do 
+		sendPushZmqMsg(chan, disconnect_msg)
+    end
+
 end
 
 local function getPushChannel (processor)
@@ -436,11 +436,9 @@ function feedfile(host, client, req)
 --------------------------------------------
 
 		local filename = path:match('/([%w%-_%.]+)$')
-		print('filename', filename)
 		local tmpfile_t = posix.stat(tmpdir..filename)
 		-- print('tmpfile_t', tmpfile_t)
 		local file_type = findType(path)
-		print('file_type', file_type)
 		if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime or isie then
 			-- read new file
 			local file = posix.open(path, posix.O_RDONLY, "664")
@@ -470,7 +468,6 @@ function feedfile(host, client, req)
 				end
 			end
 			posix.close(file)
-			print('finish send file')	
 			-- write tmp zip file
 			if #file_bufs > 0 and filename and COMPRESS_FILETYPE_DICT[file_type] and not isie then
 				local allcontent = table.concat(file_bufs)
@@ -483,7 +480,6 @@ function feedfile(host, client, req)
 				fd:close()
 			end
 		else
-			print('enter zip file read')
 			-- read buffed zip file
 			local file = posix.open(tmpdir..filename, posix.O_RDONLY, "664")
 			--print('ready to read file...', path)
@@ -495,7 +491,6 @@ function feedfile(host, client, req)
 												 ['cache-control'] = 'max-age='..(max_age or '0')
 														})
 			-- send header
-			print('send zip file headers')
 			sendData(client, res)
 
 			-- tangg
@@ -511,7 +506,6 @@ function feedfile(host, client, req)
 				end
 			end
 			posix.close(file)
-			print('over send zip file.')	
 
 		end
 	end
@@ -609,14 +603,14 @@ local cb_from_zmq_thread = function (client_skt)
 				if #res.conns > 0 then
 					-- multi connections reples
 					for i, conn_id in ipairs(res.conns) do
-						logger:debug('Ready to multi response '..conn_id )
+						-- logger:debug('Ready to multi response '..conn_id )
 						responseData (conn_id, res_data)
 					end
 				else
 					-- single connection reply
 					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
 					local conn_id = res.meta.conn_id
-					logger:debug('Ready to single response '..conn_id )
+					-- logger:debug('Ready to single response '..conn_id )
 					-- print('in single sending...', conn_id)
 					responseData (conn_id, res_data)
 				end
@@ -654,8 +648,8 @@ local cb_from_http = function (client_skt)
 		end
 	end
 
-    cleanConnection (key, client, findPushChannel(req))
-
+    cleanConnection (key)
+	logger:info('connection '..key..' closed.')
 end
 
 
@@ -673,6 +667,7 @@ copas.addserver(zmq_server, cb_from_zmq_thread)
 local main_server = socket.bind(SERVER.bind_addr, SERVER.port)
 copas.addserver(main_server, cb_from_http)
 print('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
+logger:info('lgserver bind to '..SERVER.bind_addr..":"..SERVER.port)
 
 
 os.execute('mkdir -p ' .. tmpdir)
@@ -684,5 +679,6 @@ os.execute('mkdir -p ' .. log_dir)
 
 -- main loop
 print('starting server....')
+logger:info('starting server....')
 copas.loop()
 

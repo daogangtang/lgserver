@@ -27,7 +27,8 @@ server = {
 				--		['/'] = static_lgcms,
 				['/'] = handler_lgcms,
 				['/media/'] = static_lgcms,
-				['/favicon.ico'] = static_lgcms
+				['/favicon.ico'] = static_lgcms,
+				['/static/'] = static_lgcms
 			}
         },
 
