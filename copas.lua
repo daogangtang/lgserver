@@ -21,6 +21,12 @@ local socket = require "socket"
 
 require "coxpcall"
 
+local file_log_driver = require "logging.file"
+
+local log_dir = '/var/tmp/logs/'
+local logger = file_log_driver(log_dir.."copas_%s.log", "%Y-%m-%d")
+
+
 local WATCH_DOG_TIMEOUT = 120
 local UDP_DATAGRAM_MAX = 8192
 
@@ -285,6 +291,25 @@ local _skt_mt = {__index = {
 					 next = function (self)
 						 coroutine.yield(self.socket, _writing)
 
+					 end,
+					 
+					 monitor = function (self)
+						 -- local _servers = newset() -- servers being handled
+						 -- local _reading_log = {}
+						 -- local _writing_log = {}
+
+						 -- local _reading = newset() -- sockets currently being read
+						 -- local _writing = newset() -- sockets currently being written
+						 local hashsize = function (tbl)
+							 local i = 0
+							 for k, v in pairs(tbl) do
+								 i = i + 1
+							 end
+							 return i
+						 end
+						 logger:info('lens of _servsers, _reading_log, _writing_log, _reading, _writing: ')
+						 logger:info(('%s %s %s %s %s'):format(#_servsers, hashsize(_reading_log), hashsize(_writing_log), #_reading, #_writing))
+						 
 					 end,
 					 
 					 -- clear the connection related coroutines
