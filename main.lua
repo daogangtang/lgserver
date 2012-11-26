@@ -66,10 +66,6 @@ for i, host in ipairs(HOSTS) do
 				local channel_push = ctx:socket(zmq.PUSH)
 				channel_push:bind(processor.send_spec)
 				
-				--local channel_sub = ctx:socket(zmq.SUB)
-				--channel_sub:setopt(zmq.SUBSCRIBE, "")
-				--channel_sub:connect(processor.recv_spec)
-				
 				-- record all zmq channels
 				CHANNEL_PUSH_DICT[processor.send_spec] = channel_push
 				table.insert(CHANNEL_SUB_LIST, processor.recv_spec)
@@ -246,30 +242,6 @@ local function sendPushZmqMsg(channel_push, req)
 	channel_push:send(cmsgpack.pack(req))
 end
 
---[[
-local function receivePullZmqMsg(channel_pull, client)
-	local msg, err
-	repeat
-		-- use noblock zmq to switch to other coroutines
-		msg, err = channel_pull:recv(zmq.NOBLOCK)
-		if not msg then
-			if err == 'timeout' then
-				-- print('wait....')
-				-- switch
-				client:next()
-			else
-				error("socket recv error:" .. err)
-			end
-		end
-	until msg
-
-	-- local more = src:getopt(zmq.RCVMORE) > 0
-	-- dst:send(data,more and zmq.SNDMORE or 0)
-
-	return cmsgpack.unpack(msg)
-end
---]]
-
 -- client is copas object
 local function sendData (client, data)
 	local s = client:send(data)
@@ -386,7 +358,6 @@ function feedfile(host, client, req)
 	end
 
 	local file_t = posix.stat(path)
-	--print(file_t)
 	local last_modified_time = req.headers['if-modified-since']
 	local isie = req.meta.isie
 	if isie and last_modified_time then
@@ -404,40 +375,9 @@ function feedfile(host, client, req)
 		sendData(client, http_response('Not Changed', 304, 'Not Changed'))
 
 	else
---[[
-		local file = posix.open(path, posix.O_RDONLY, "664")
-
-		local size = 0
-		if file_t then size = file_t.size end
-		local res = http_response_header(200, 'OK', {
-			['content-type'] = findType(req),
-			['content-length'] = size,
-			['last-modified'] = file_t.mtime,
-			['cache-control'] = 'max-age='..(host['max-age'] or '0')
-		})
-		-- send header
-		sendData(client, res)
-		local content, s
-		while true do
-			content = posix.read(file, 8192)	
-			-- if no data read, nread is 0, not nil
-			if #content > 0 then
-				s = sendData(client, content)
-				-- if connection is broken
-				if not s then break end
-				-- switch to another coroutine
-				client:next()
-			else
-				break
-			end
-		end
-		posix.close(file)
---]]	
---------------------------------------------
 
 		local filename = path:match('/([%w%-_%.]+)$')
 		local tmpfile_t = posix.stat(tmpdir..filename)
-		-- print('tmpfile_t', tmpfile_t)
 		local file_type = findType(path)
 		if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime or isie then
 			-- read new file
@@ -450,7 +390,6 @@ function feedfile(host, client, req)
 														})
 			-- send header
 			sendData(client, res)
-			-- tangg
 			local content, s
 			local file_bufs = {}
 			while true do
@@ -468,21 +407,33 @@ function feedfile(host, client, req)
 				end
 			end
 			posix.close(file)
+			
 			-- write tmp zip file
-			if #file_bufs > 0 and filename and COMPRESS_FILETYPE_DICT[file_type] and not isie then
+			if #file_bufs > 0 
+				and filename 
+				and COMPRESS_FILETYPE_DICT[file_type] 
+				and not isie 
+			then
 				local allcontent = table.concat(file_bufs)
-				-- print('--->', #allcontent)
 				allcontent = CompressStream(allcontent, 'full')
-				-- print('--=>', #allcontent)
-
-				local fd = io.open(tmpdir .. filename, 'w')
-				fd:write(allcontent)
-				fd:close()
+				
+				local base = req.path:match('^(.*/)[%w%%%-_%.]+$')
+				-- print('base-->', base)
+				local fd
+				if base == '' then
+					fd = io.open(tmpdir .. filename, 'w')
+				else
+					os.execute('mkdir -p ' .. tmpdir..base)
+					fd = io.open(tmpdir .. base .. filename, 'w')
+				end
+				if fd then
+					fd:write(allcontent)
+					fd:close()
+				end
 			end
 		else
 			-- read buffed zip file
 			local file = posix.open(tmpdir..filename, posix.O_RDONLY, "664")
-			--print('ready to read file...', path)
 			local res = http_response_header(200, 'OK', {
 												 ['content-type'] = file_type,
 												 ['content-length'] = tmpfile_t.size,
@@ -493,7 +444,6 @@ function feedfile(host, client, req)
 			-- send header
 			sendData(client, res)
 
-			-- tangg
 			local content, s
 			while true do
 				content = posix.read(file, 8192)	
@@ -509,9 +459,6 @@ function feedfile(host, client, req)
 
 		end
 	end
-	
-	-- here, we use one connection to serve one file
-	-- cleanConnection(req.meta.conn_id, client)
 end
 
 
@@ -555,19 +502,14 @@ local cb_from_zmq_thread = function (client_skt)
 		-- may have more than 1 messages
 		while true do
 			local s, errmsg, partial = client:receive(8192)
---			if not s and errmsg == 'closed' then end
---			print('s, errmsg, partial', s and #s, errmsg)
 			if not s and errmsg == 'timeout' then 
 				if partial and #partial > 0 then
 					table.insert(strs, partial)
-					-- reqstr = reqstr .. partial
 				end
 				break
 			end 
-			-- reqstr = reqstr..(s or partial)
 			table.insert(strs, s or partial)
 		end
-		-- print('in thread callback', #reqstr, reqstr:sub(1,10))
 		
 		local reqstr = table.concat(strs)
 		-- retreive messages
@@ -583,21 +525,10 @@ local cb_from_zmq_thread = function (client_skt)
 
 			c = l + msg_length + 1
 		end
-	
+
 		for _, msg in ipairs(msgs) do
 			local res = cmsgpack.unpack(msg)
---[[			
---          if res.meta.isie then
-				--print('this is ie...')
-				--res.data = '\x78\x9c'..res.data 
-				--res.data = res.data:sub(3)
-			elseif res.headers['content-type'] == 'application/json' or res.headers['content-type'] == 'application/x-javascript' then
 
-			else
-				res.data = CompressStream(res.data, 'full')
-				res.headers['content-encoding'] = 'deflate'
-			end
---]]
 			local res_data = http_response(res.data, res.code, res.status, res.headers)
 			if res.meta and res.conns then
 				-- protocol define: res.conns must be a table

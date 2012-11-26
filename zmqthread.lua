@@ -19,7 +19,7 @@ return
 		
     while true do
 		local msg, err = channel_sub:recv()   -- block wait
-		-- print('return msg...', #msg)
+		-- print('return msg...', msg, #msg)
 
 		local s, errmsg = client:send(#msg..' '..msg)
 		if not s and errmsg == 'closed' then
