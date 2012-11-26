@@ -586,7 +586,8 @@ local cb_from_zmq_thread = function (client_skt)
 	
 		for _, msg in ipairs(msgs) do
 			local res = cmsgpack.unpack(msg)
-			if res.meta.isie then
+--[[			
+--          if res.meta.isie then
 				--print('this is ie...')
 				--res.data = '\x78\x9c'..res.data 
 				--res.data = res.data:sub(3)
@@ -596,7 +597,7 @@ local cb_from_zmq_thread = function (client_skt)
 				res.data = CompressStream(res.data, 'full')
 				res.headers['content-encoding'] = 'deflate'
 			end
-
+--]]
 			local res_data = http_response(res.data, res.code, res.status, res.headers)
 			if res.meta and res.conns then
 				-- protocol define: res.conns must be a table

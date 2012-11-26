@@ -12,7 +12,7 @@ handler_lgcms = { type="handler",
 server = {
     name="server1",
     bind_addr = "0.0.0.0",
-    port=8080,
+    port=80,
     access_log="logs/access.log",
     error_log="logs/error.log",
     default_host="lgcms",
@@ -20,7 +20,7 @@ server = {
         {       
 			name="lgcms",
 			--matching="lgcms",
-			root_dir = "/home/xen/workspace/lgcms_tg/",
+			root_dir = "/home/xinst/workspace/lgcms/",
 
 			-- ['max-age'] = 60,
 			routes={
@@ -28,7 +28,9 @@ server = {
 				['/'] = handler_lgcms,
 				['/media/'] = static_lgcms,
 				['/favicon.ico'] = static_lgcms,
-				['/static/'] = static_lgcms
+				['/static/'] = static_lgcms,
+                ['/do_not_delete/'] = static_lgcms,
+                ['/robots.txt'] = static_lgcms
 			}
         },
 

@@ -14,7 +14,8 @@ return
     local ctx = zmq.init(1)
     local channel_sub = ctx:socket(zmq.SUB)
 	channel_sub:setopt(zmq.SUBSCRIBE, "")
-	channel_sub:connect(channel_sub_addr)
+--	channel_sub:connect(channel_sub_addr)
+	channel_sub:bind(channel_sub_addr)
 		
     while true do
 		local msg, err = channel_sub:recv()   -- block wait
