@@ -423,7 +423,7 @@ function feedfile(host, client, req)
 				if base == '' then
 					fd = io.open(tmpdir .. filename, 'w')
 				else
-					posix.mkdir(tmpdir .. base)
+					os.execute('mkdir -p ' .. tmpdir..base)
 					fd = io.open(tmpdir .. base .. filename, 'w')
 				end
 				if fd then
