@@ -401,7 +401,7 @@ function feedfile(host, client, req)
 
 					table.insert(file_bufs, content)
 					-- switch to another coroutine
-					client:next()
+					-- client:next()
 				else
 					break
 				end
@@ -451,6 +451,8 @@ function feedfile(host, client, req)
 				if #content > 0 then
 					s = sendData(client, content)
 					if not s then break end
+					
+                    -- client:next()
 				else
 					break
 				end
@@ -497,21 +499,20 @@ end
 
 local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
-	while true do
+--	while true do
+-- print('in cb_from_zmq_thread')
 		local strs = {}
 		-- may have more than 1 messages
 		while true do
 			local s, errmsg, partial = client:receive(8192)
-			if not s and errmsg == 'timeout' then 
-				if partial and #partial > 0 then
-					table.insert(strs, partial)
-				end
-				break
-			end 
+--			print(s and #s, errmsg, partial and #partial)
 			table.insert(strs, s or partial)
+            if errmsg == 'closed' then break end
 		end
 		
 		local reqstr = table.concat(strs)
+        --print('reqstr----', reqstr)
+--        print('reqstr----', #reqstr)
 		-- retreive messages
 		local msgs = {}
 		local c, l = 1, 1
@@ -528,20 +529,6 @@ local cb_from_zmq_thread = function (client_skt)
 
 		for _, msg in ipairs(msgs) do
 			local res = cmsgpack.unpack(msg)
---[[
-			if res.meta.isie then
-				--print('this is ie...')
-				--res.data = '\x78\x9c'..res.data 
-				--res.data = res.data:sub(3)
-			elseif res.headers['content-type'] == 'application/json' 
-				or res.headers['content-type'] == 'application/x-javascript' 
-				or #res.data < 128 then
-
-			else
-				res.data = CompressStream(res.data, 'full')
-				res.headers['content-encoding'] = 'deflate'
-			end
---]]
 
 			local res_data = http_response(res.data, res.code, res.status, res.headers)
 			if res.meta and res.conns then
@@ -563,7 +550,7 @@ local cb_from_zmq_thread = function (client_skt)
 			end
 			
 		end
-	end
+--	end
 end
 
 

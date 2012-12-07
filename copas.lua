@@ -70,7 +70,7 @@ _DESCRIPTION = "Coroutine Oriented Portable Asynchronous Services"
 _VERSION     = "Copas 1.1.7"
 
 -- Close the socket associated with the current connection after the handler finishes
-autoclose = false
+autoclose = true
 
 -------------------------------------------------------------------------------
 -- Simple set implementation based on LuaSocket's tinyirc.lua example
@@ -289,8 +289,8 @@ local _skt_mt = {__index = {
 					 end,
 
 					 next = function (self)
-						 coroutine.yield(self.socket, _writing)
-
+		                 _writing_log[self.socket] = os.time()
+                         coroutine.yield(self.socket, _writing)
 					 end,
 					 
 					 monitor = function (self)
@@ -307,8 +307,9 @@ local _skt_mt = {__index = {
 							 end
 							 return i
 						 end
-						 logger:info('lens of _servsers, _reading_log, _writing_log, _reading, _writing: ')
-						 logger:info(('%s %s %s %s %s'):format(#_servsers, hashsize(_reading_log), hashsize(_writing_log), #_reading, #_writing))
+						 logger:info('lens of _servers, _reading_log, _writing_log, _reading, _writing: ')
+						 logger:info(('%s %s %s %s %s'):format(#_servers, hashsize(_reading_log), hashsize(_writing_log), #_reading, #_writing))
+						 
 						 
 					 end,
 					 
