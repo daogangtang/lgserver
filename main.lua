@@ -510,46 +510,47 @@ local cb_from_zmq_thread = function (client_skt)
             if errmsg == 'closed' then break end
 		end
 		
-		local reqstr = table.concat(strs)
+		-- local reqstr = table.concat(strs)
+		local msg = table.concat(strs)
         --print('reqstr----', reqstr)
 --        print('reqstr----', #reqstr)
 		-- retreive messages
-		local msgs = {}
-		local c, l = 1, 1
-		while c < #reqstr do
-			l = reqstr:find(' ', c)
-			if not l then break end
+		-- local msgs = {}
+		-- local c, l = 1, 1
+		-- while c < #reqstr do
+		-- 	l = reqstr:find(' ', c)
+		-- 	if not l then break end
 			
-			local msg_length = tonumber(reqstr:sub(c, l-1))
-			local msg = reqstr:sub(l+1, l+msg_length)
-			table.insert(msgs, msg)
+		-- 	local msg_length = tonumber(reqstr:sub(c, l-1))
+		-- 	local msg = reqstr:sub(l+1, l+msg_length)
+		-- 	table.insert(msgs, msg)
 
-			c = l + msg_length + 1
-		end
+		-- 	c = l + msg_length + 1
+		-- end
 
-		for _, msg in ipairs(msgs) do
-			local res = cmsgpack.unpack(msg)
+		-- for _, msg in ipairs(msgs) do
+		local res = cmsgpack.unpack(msg)
 
-			local res_data = http_response(res.data, res.code, res.status, res.headers)
-			if res.meta and res.conns then
-				-- protocol define: res.conns must be a table
-				if #res.conns > 0 then
-					-- multi connections reples
-					for i, conn_id in ipairs(res.conns) do
-						-- logger:debug('Ready to multi response '..conn_id )
-						responseData (conn_id, res_data)
-					end
-				else
-					-- single connection reply
-					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
-					local conn_id = res.meta.conn_id
-					-- logger:debug('Ready to single response '..conn_id )
-					-- print('in single sending...', conn_id)
+		local res_data = http_response(res.data, res.code, res.status, res.headers)
+		if res.meta and res.conns then
+			-- protocol define: res.conns must be a table
+			if #res.conns > 0 then
+				-- multi connections reples
+				for i, conn_id in ipairs(res.conns) do
+					-- logger:debug('Ready to multi response '..conn_id )
 					responseData (conn_id, res_data)
 				end
+			else
+				-- single connection reply
+				-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
+				local conn_id = res.meta.conn_id
+				-- logger:debug('Ready to single response '..conn_id )
+				-- print('in single sending...', conn_id)
+				responseData (conn_id, res_data)
 			end
-			
 		end
+			
+		-- end
 --	end
 end
 

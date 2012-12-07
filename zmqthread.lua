@@ -24,18 +24,19 @@ return
 		    local msg = channel_sub:recv()   -- block wait
 		    -- print('return msg...', msg, #msg)
 
-		    local data = string.format("%s %s", #msg, msg)
-		    
+		    -- local data = string.format("%s %s", #msg, msg)
+		    local data = msg
+
             local lastIndex = 0
             local s, err
 	        while true do
                 s, err, lastIndex = client:send(data, lastIndex + 1)
---                print(s, err, lastIndex)
+--              print(s, err, lastIndex)
                 if s or err ~= "timeout" then
 			        break
 		        end
             end
---            print('ready close') 
+--          print('ready close') 
             client:close()
         end 
     end
