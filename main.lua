@@ -377,9 +377,10 @@ function feedfile(host, client, req)
 		sendData(client, http_response('Not Changed', 304, 'Not Changed'))
 
 	else
-        local max_age = host['max-age']
+        local max_age = host['max-age'] or 0
 		local filename = path:match('/([^/]+)$')
         if not filename then return end 
+		
 		local tmpfile_t = posix.stat(tmpdir..filename)
 		local file_type = findType(path)
 		if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime or isie then
@@ -389,7 +390,7 @@ function feedfile(host, client, req)
 												 ['content-type'] = file_type,
 												 ['content-length'] = file_t.size,
 												 ['last-modified'] = file_t.mtime,
-												 ['cache-control'] = 'max-age='..(max_age or '0')
+												 ['cache-control'] = 'max-age='..max_age
 														})
 			-- send header
 			sendData(client, res)
@@ -442,7 +443,7 @@ function feedfile(host, client, req)
 												 ['content-length'] = tmpfile_t.size,
 												 ['last-modified'] = tmpfile_t.mtime,
 												 ['content-encoding'] = 'deflate',
-												 ['cache-control'] = 'max-age='..(max_age or '0')
+												 ['cache-control'] = 'max-age='..max_age
 														})
 			-- send header
 			sendData(client, res)
@@ -476,8 +477,11 @@ local handlerProcessing = function (processor, client, req)
 end
 
 function serviceDispatcher(key)
-	local client = CONNECTION_DICT[key][1]
-	local req = CONNECTION_DICT[key][2]
+	local conn_obj = CONNECTION_DICT[key]
+	if not conn_obj then return end
+
+	local client = conn_obj[1]
+	local req = conn_obj[2]
 
 	local host = findHost(req)
 	if not host then
