@@ -22,15 +22,16 @@ server = {
 			--matching="lgcms",
 			root_dir = "/home/xinst/workspace/lgcms/",
 
-			-- ['max-age'] = 60,
+			['max-age'] = 600,
 			routes={
 				--		['/'] = static_lgcms,
 				['/'] = handler_lgcms,
 				['/media/'] = static_lgcms,
 				['/favicon.ico'] = static_lgcms,
 				['/static/'] = static_lgcms,
-                ['/do_not_delete/'] = static_lgcms,
-                ['/robots.txt'] = static_lgcms
+                		['/do_not_delete/'] = static_lgcms,
+                		['/robots.txt'] = static_lgcms,
+				['/xstred/'] = static_lgcms
 			}
         },
 

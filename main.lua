@@ -79,12 +79,14 @@ end
 
 local function findHost(req) 
 	if req and req.headers and req.headers.host then
-		local ask_host = req.headers.host:match('^([%w%.]+):?')
-		for i, host in ipairs(HOSTS) do
-			if host.matching and ask_host:match(host.matching..'$') then
-				return host
-			end
-		end
+		local ask_host = req.headers.host:match('^([%w%-%.]+):?')
+		if ask_host then
+            for i, host in ipairs(HOSTS) do
+			    if host.matching and ask_host:match(host.matching..'$') then
+				    return host
+			    end 
+		    end
+        end
 	end
 
 	return nil
@@ -226,7 +228,7 @@ function init_parser(req)
 		cur.meta.completed = true
 
 		local user_agent = req.headers['user-agent']
-		if user_agent:find('MSIE') or user_agent:find('Trident') then
+		if user_agent and (user_agent:find('MSIE') or user_agent:find('Trident')) then
 			req.meta.isie = 'ie'
 		end
 	end
@@ -375,8 +377,9 @@ function feedfile(host, client, req)
 		sendData(client, http_response('Not Changed', 304, 'Not Changed'))
 
 	else
-
-		local filename = path:match('/([%w%-_%.]+)$')
+        local max_age = host['max-age']
+		local filename = path:match('/([^/]+)$')
+        if not filename then return end 
 		local tmpfile_t = posix.stat(tmpdir..filename)
 		local file_type = findType(path)
 		if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime or isie then
@@ -401,7 +404,7 @@ function feedfile(host, client, req)
 
 					table.insert(file_bufs, content)
 					-- switch to another coroutine
-					client:next()
+					-- client:next()
 				else
 					break
 				end
@@ -417,7 +420,7 @@ function feedfile(host, client, req)
 				local allcontent = table.concat(file_bufs)
 				allcontent = CompressStream(allcontent, 'full')
 				
-				local base = req.path:match('^(.*/)[%w%%%-_%.]+$')
+				local base = req.path:match('^(.*/)[^/]+$')
 				-- print('base-->', base)
 				local fd
 				if base == '' then
@@ -451,6 +454,8 @@ function feedfile(host, client, req)
 				if #content > 0 then
 					s = sendData(client, content)
 					if not s then break end
+					
+                    -- client:next()
 				else
 					break
 				end
@@ -497,59 +502,57 @@ end
 
 local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
-	while true do
+--	while true do
+-- print('in cb_from_zmq_thread')
 		local strs = {}
 		-- may have more than 1 messages
 		while true do
 			local s, errmsg, partial = client:receive(8192)
-			if not s and errmsg == 'timeout' then 
-				if partial and #partial > 0 then
-					table.insert(strs, partial)
-				end
-				break
-			end 
+--			print(s and #s, errmsg, partial and #partial)
 			table.insert(strs, s or partial)
+            if errmsg == 'closed' then break end
 		end
 		
-		local reqstr = table.concat(strs)
+		-- local reqstr = table.concat(strs)
+		local msg = table.concat(strs)
+        --print('reqstr----', reqstr)
+--        print('reqstr----', #reqstr)
 		-- retreive messages
-		local msgs = {}
-		local c, l = 1, 1
-		while c < #reqstr do
-			l = reqstr:find(' ', c)
-			if not l then break end
+		-- local msgs = {}
+		-- local c, l = 1, 1
+		-- while c < #reqstr do
+		-- 	l = reqstr:find(' ', c)
+		-- 	if not l then break end
 			
-			local msg_length = tonumber(reqstr:sub(c, l-1))
-			local msg = reqstr:sub(l+1, l+msg_length)
-			table.insert(msgs, msg)
+		-- 	table.insert(msgs, msg)
 
-			c = l + msg_length + 1
-		end
+		-- 	c = l + msg_length + 1
+		-- end
 
-		for _, msg in ipairs(msgs) do
-			local res = cmsgpack.unpack(msg)
+		-- for _, msg in ipairs(msgs) do
+		local res = cmsgpack.unpack(msg)
 
-			local res_data = http_response(res.data, res.code, res.status, res.headers)
-			if res.meta and res.conns then
-				-- protocol define: res.conns must be a table
-				if #res.conns > 0 then
-					-- multi connections reples
-					for i, conn_id in ipairs(res.conns) do
-						-- logger:debug('Ready to multi response '..conn_id )
-						responseData (conn_id, res_data)
-					end
-				else
-					-- single connection reply
-					-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
-					local conn_id = res.meta.conn_id
-					-- logger:debug('Ready to single response '..conn_id )
-					-- print('in single sending...', conn_id)
+		local res_data = http_response(res.data, res.code, res.status, res.headers)
+		if res.meta and res.conns then
+			-- protocol define: res.conns must be a table
+			if #res.conns > 0 then
+				-- multi connections reples
+				for i, conn_id in ipairs(res.conns) do
+					-- logger:debug('Ready to multi response '..conn_id )
 					responseData (conn_id, res_data)
 				end
+			else
+				-- single connection reply
+				-- XXX: res.meta.conn_id is probably not the same as req.meta.conn_id
+				local conn_id = res.meta.conn_id
+				-- logger:debug('Ready to single response '..conn_id )
+				-- print('in single sending...', conn_id)
+				responseData (conn_id, res_data)
 			end
-			
 		end
-	end
+			
+		-- end
+--	end
 end
 
 
