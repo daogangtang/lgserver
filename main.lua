@@ -389,9 +389,9 @@ function serviceDispatcher(key)
 			end
 			
 			local extra = {
-				['if-modified-since'] = req.headers['if-modified-since']
+				['if-modified-since'] = req.headers['if-modified-since'],
 				['isie'] = req.meta.isie,
-				['max-age'] = host['max-age'] or req.headers['max-age']
+				['max-age'] = host['max-age'] or req.headers['max-age'],
 			}
 
 			queue:push(client, path, extra)
