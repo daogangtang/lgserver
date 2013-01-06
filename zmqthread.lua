@@ -18,6 +18,11 @@ return
 	channel_sub:bind(channel_sub_addr)
 		
     while true do
+
+  local status, message = pcall(function()
+
+
+
         local client = socket.connect(host, port)
 --print('create socket')
         if client then
@@ -39,6 +44,12 @@ return
 --          print('ready close') 
             client:close()
         end 
+  end)
+  if not status then
+      print('Error while serving request:', message)
+  end
+
+
     end
     
     print('Client Ends.')

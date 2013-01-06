@@ -386,6 +386,7 @@ function feedfile(host, client, req)
 		if not tmpfile_t or not COMPRESS_FILETYPE_DICT[file_type] or tmpfile_t.mtime < file_t.mtime or isie then
 			-- read new file
 			local file = posix.open(path, posix.O_RDONLY, "664")
+			if not file then return nil end
 			local res = http_response_header(200, 'OK', {
 												 ['content-type'] = file_type,
 												 ['content-length'] = file_t.size,
@@ -438,6 +439,7 @@ function feedfile(host, client, req)
 		else
 			-- read buffed zip file
 			local file = posix.open(tmpdir..filename, posix.O_RDONLY, "664")
+			if not file then return nil end
 			local res = http_response_header(200, 'OK', {
 												 ['content-type'] = file_type,
 												 ['content-length'] = tmpfile_t.size,
@@ -508,6 +510,11 @@ local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
 --	while true do
 -- print('in cb_from_zmq_thread')
+
+
+	local status, message = pcall(function()
+--<<
+
 		local strs = {}
 		-- may have more than 1 messages
 		while true do
@@ -554,6 +561,13 @@ local cb_from_zmq_thread = function (client_skt)
 				responseData (conn_id, res_data)
 			end
 		end
+-->>
+
+	end)
+
+	if not status then
+		logger:error('Error while serving request:' .. message)
+	end
 			
 		-- end
 --	end
@@ -564,6 +578,9 @@ end
 local cb_from_http = function (client_skt)
 	-- client is copas wrapped object
 	local client = copas.wrap(client_skt)
+
+	local status, message = pcall(function()
+--<<
 	local req, key, parser
 	req = {headers={}, meta={}}
 	key = recordConnection(client, req)
@@ -589,6 +606,13 @@ local cb_from_http = function (client_skt)
 
     cleanConnection (key)
 	logger:info('connection '..key..' closed.')
+-->>
+	end)
+
+	if not status then
+		logger:error('Error while serving request:' .. message)
+	end
+
 end
 
 
