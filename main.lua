@@ -544,9 +544,9 @@ local cb_from_zmq_thread = function (client_skt)
 		local res = cmsgpack.unpack(msg)
 
 		local res_data = http_response(res.data, res.code, res.status, res.headers)
-		if res.meta and res.conns then
+		if res.meta then
 			-- protocol define: res.conns must be a table
-			if #res.conns > 0 then
+			if res.meta.conns and #res.meta.conns > 0 then
 				-- multi connections reples
 				for i, conn_id in ipairs(res.conns) do
 					-- logger:debug('Ready to multi response '..conn_id )
