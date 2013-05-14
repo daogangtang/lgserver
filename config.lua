@@ -21,7 +21,7 @@ server = {
 			name="lgcms",
 			--matching="lgcms",
 			--root_dir = "/home/xen/workspace/lgcms/",
-			root_dir = "/home/xen/workspace/jingcai/",
+			root_dir = "/home/xen/workspace/mobilechat/manage/media/",
 
 			['max-age'] = 600,
 			routes={

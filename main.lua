@@ -93,13 +93,14 @@ local function findHost(req)
 end
 
 function findHandle(host, req)
-    if req.path then	
+    if req.path then
 	    local path = req.path:gsub('/+', '/')
-	    for i, pattern in ipairs(host.patterns) do
-		    if path:match('^'..pattern) then
-			    return pattern, host.routes[pattern]
-		    end
-	    end
+      for i, pattern in ipairs(host.patterns) do
+        if path:match('^'..pattern) then
+          return pattern, host.routes[pattern]
+        end
+      end
+      return nil, nil
     else
     	return nil, nil
     end
@@ -356,7 +357,7 @@ function feedfile(host, client, req)
 		sendData(client, http_response('Forbidden', 403, 'Forbidden'))
 		return false
 	elseif path == host.root_dir then 
-		path = host.root_dir..'/static_default/index.html' 
+		path = host.root_dir..'index.html' 
 	end
 
 	local file_t = posix.stat(path)
@@ -478,6 +479,19 @@ local handlerProcessing = function (processor, client, req)
 	
 end
 
+local checkStaticFile = function (host, req)
+  local path, err = regularPath(host, req.path)
+  
+	if not path then
+		return nil
+	elseif path == host.root_dir then 
+		path = host.root_dir..'index.html' 
+	end
+
+	return posix.stat(path)
+end
+
+
 function serviceDispatcher(key)
 	local conn_obj = CONNECTION_DICT[key]
 	if not conn_obj then return end
@@ -490,18 +504,32 @@ function serviceDispatcher(key)
 		host = HOSTS[1]
 	end
 	local pattern, handle_t = findHandle(host, req)
+  --print('pattern', pattern, handle_t)
 	if pattern then
-		if handle_t.type == 'dir' then
+    if pattern == '/' then
+      local r = checkStaticFile(host, req)
+      if r or handle_t.type == 'dir' then
+        feedfile(host, client, req)
+      elseif handle_t.type == 'handler' then
+        handlerProcessing(handle_t, client, req)
+      end
+    else
+    
+      if handle_t.type == 'dir' then
 
-			feedfile(host, client, req)
+        feedfile(host, client, req)
 
-		elseif handle_t.type == 'handler' then
+      elseif handle_t.type == 'handler' then
 
-			handlerProcessing(handle_t, client, req)
+        handlerProcessing(handle_t, client, req)
 
-		end
+      end
+    end
 	else
-		sendData(client, http_response('Not Found', 404, 'Not Found'))
+    --print('no pattern', req.path)
+    -- default find url file in root_dir, act as '/' base
+    feedfile(host, client, req)
+		-- sendData(client, http_response('Not Found', 404, 'Not Found'))
 	end
 end
 
