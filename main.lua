@@ -213,6 +213,7 @@ function init_parser(req)
 
 		cur.url = url
 		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
+		cur.headers['remote_ip'] = remote_ip
 	end
 
 	function cb.on_header(field, value)
