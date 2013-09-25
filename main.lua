@@ -149,8 +149,18 @@ function findType(path)
 	return content_type or 'text/plain'
 end
 
-function regularPath(host, path)
+function regularPath(host, path, handle_t)
 	local orig_path = path
+	if handle_t and handle_t.removeprefix then
+		local start, stop = path:find(handle_t.removeprefix)
+		if start == 1 then
+			path = path:sub(stop+1)
+		end
+	end
+	if handle_t and handle_t.addprefix then
+		path = handle_t.addprefix ..  path
+	end
+
 	path = host.root_dir..path
 	path = path:gsub('/+', '/') 
 	
@@ -351,8 +361,8 @@ local function changeGMT2Timestamp (gmt_date)
 	end
 end
 
-function feedfile(host, client, req)
-	local path, err = regularPath(host, req.path)
+function feedfile(host, client, req, handle_t)
+	local path, err = regularPath(host, req.path, handle_t)
 	if not path then
 		logger:info(err)
 		sendData(client, http_response('Forbidden', 403, 'Forbidden'))
@@ -480,8 +490,8 @@ local handlerProcessing = function (processor, client, req)
 	
 end
 
-local checkStaticFile = function (host, req)
-  local path, err = regularPath(host, req.path)
+local checkStaticFile = function (host, req, handle_t)
+  local path, err = regularPath(host, req.path, handle_t)
   
 	if not path then
 		return nil
@@ -508,9 +518,9 @@ function serviceDispatcher(key)
   --print('pattern', pattern, handle_t)
 	if pattern then
     if pattern == '/' then
-      local r = checkStaticFile(host, req)
+      local r = checkStaticFile(host, req, handle_t)
       if r or handle_t.type == 'dir' then
-        feedfile(host, client, req)
+        feedfile(host, client, req, handle_t)
       elseif handle_t.type == 'handler' then
         handlerProcessing(handle_t, client, req)
       end
@@ -518,7 +528,7 @@ function serviceDispatcher(key)
     
       if handle_t.type == 'dir' then
 
-        feedfile(host, client, req)
+        feedfile(host, client, req, handle_t)
 
       elseif handle_t.type == 'handler' then
 
@@ -529,7 +539,7 @@ function serviceDispatcher(key)
 	else
     --print('no pattern', req.path)
     -- default find url file in root_dir, act as '/' base
-    feedfile(host, client, req)
+    feedfile(host, client, req, handle_t)
 		-- sendData(client, http_response('Not Found', 404, 'Not Found'))
 	end
 end

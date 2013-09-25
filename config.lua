@@ -1,4 +1,4 @@
-static_lgcms = { type="dir" }
+static_lgcms = { type="dir", removeprefix='/media' }
 
 static_default = { type="dir" }
 
@@ -21,18 +21,12 @@ server = {
 			name="lgcms",
 			--matching="lgcms",
 			--root_dir = "/home/xen/workspace/lgcms/",
-			root_dir = "/home/xen/workspace/mobilechat/manage/media/",
+			root_dir = "/home/xen/workspace/lgcms2/media/",
 
-			['max-age'] = 600,
+			--['max-age'] = 600,
 			routes={
-				--		['/'] = static_lgcms,
 				['/'] = handler_lgcms,
 				['/media/'] = static_lgcms,
-				['/favicon.ico'] = static_lgcms,
-				['/static/'] = static_lgcms,
-                		['/do_not_delete/'] = static_lgcms,
-                		['/robots.txt'] = static_lgcms,
-				['/xstred/'] = static_lgcms
 			}
         },
 
