@@ -654,16 +654,16 @@ local cb_from_http = function (client_skt)
 
 end
 
-
+local zmqport = allconfig.zmqport or  '12310'
 -- ==========================================================
 -- another thread
 local zmq_thread = require 'zmqthread'
 -- create detached child thread.
-local thread = llthreads.new(zmq_thread, '127.0.0.1', '12310', CHANNEL_SUB_LIST[1])
+local thread = llthreads.new(zmq_thread, '127.0.0.1', zmqport, CHANNEL_SUB_LIST[1])
 -- start non-joinable detached child thread.
 assert(thread:start(true))
 
-local zmq_server = socket.bind('127.0.0.1', '12310')
+local zmq_server = socket.bind('127.0.0.1', zmqport)
 copas.addserver(zmq_server, cb_from_zmq_thread)
 
 local main_server = socket.bind(SERVER.bind_addr, SERVER.port)

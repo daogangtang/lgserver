@@ -8,6 +8,7 @@ handler_lgcms = { type="handler",
 		recv_spec='tcp://127.0.0.1:1235', 
 		recv_ident=''}
 
+zmqport = '12310'
 
 server = {
     name="server1",
