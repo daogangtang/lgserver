@@ -651,7 +651,7 @@ local cb_from_http = function (client_skt)
 
 end
 
-local zmqport = allconfig.zmqport or  '12310'
+local zmqport = allconfig.zmq_port or  '12310'
 -- ==========================================================
 -- another thread
 local zmq_thread = require 'zmqthread'
