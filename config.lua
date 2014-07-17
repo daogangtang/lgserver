@@ -22,7 +22,7 @@ server = {
 			name="lgcms",
 			--matching="lgcms",
 			--root_dir = "/home/xen/workspace/lgcms/",
-			root_dir = "/home/xen/workspace/lgcms2/media/",
+			root_dir = "/home/mike/workspace/mobilechat/manage/media/",
 
 			--['max-age'] = 600,
 			routes={

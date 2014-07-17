@@ -224,6 +224,7 @@ function init_parser(req)
 		cur.url = url
 		cur.path, cur.query_string, cur.fragment = parse_path_query_fragment(url)
 		cur.headers['remote_ip'] = remote_ip
+
 	end
 
 	function cb.on_header(field, value)
@@ -242,6 +243,10 @@ function init_parser(req)
 		local user_agent = req.headers['user-agent']
 		if user_agent and (user_agent:find('MSIE') or user_agent:find('Trident')) then
 			req.meta.isie = 'ie'
+		end
+		
+		if cur.headers['lgserver_cmd'] then
+			cur.meta.cmd = cur.headers['lgserver_cmd']
 		end
 	end
 
@@ -547,12 +552,8 @@ end
 
 local cb_from_zmq_thread = function (client_skt)
 	local client = copas.wrap(client_skt)
---	while true do
--- print('in cb_from_zmq_thread')
-
-
+	
 	local status, message = pcall(function()
---<<
 
 		local strs = {}
 		-- may have more than 1 messages
@@ -560,27 +561,12 @@ local cb_from_zmq_thread = function (client_skt)
 			local s, errmsg, partial = client:receive(8192)
 --			print(s and #s, errmsg, partial and #partial)
 			table.insert(strs, s or partial)
-            if errmsg == 'closed' then break end
+            		if errmsg == 'closed' then break end
 		end
 		
-		-- local reqstr = table.concat(strs)
 		local msg = table.concat(strs)
-        --print('reqstr----', reqstr)
---        print('reqstr----', #reqstr)
-		-- retreive messages
-		-- local msgs = {}
-		-- local c, l = 1, 1
-		-- while c < #reqstr do
-		-- 	l = reqstr:find(' ', c)
-		-- 	if not l then break end
-			
-		-- 	table.insert(msgs, msg)
-
-		-- 	c = l + msg_length + 1
-		-- end
-
-		-- for _, msg in ipairs(msgs) do
 		local res = cmsgpack.unpack(msg)
+		
 
 		local res_data = http_response(res.data, res.code, res.status, res.headers)
 		if res.meta then
@@ -600,7 +586,6 @@ local cb_from_zmq_thread = function (client_skt)
 				responseData (conn_id, res_data)
 			end
 		end
--->>
 
 	end)
 
@@ -629,6 +614,7 @@ local cb_from_http = function (client_skt)
 	while true do
 
 		local s, errmsg, partial = client:receive(8192)
+		--print('--->', s, errmsg, partial)
 		if not s and errmsg == 'closed' then 
 		    break
 		end
@@ -636,15 +622,26 @@ local cb_from_http = function (client_skt)
 		local reqstr = s or partial
 		parser:execute(reqstr)
 
-		if req.meta.completed then
-			req.method = parser:method()
-			req.version = parser:version()
-			serviceDispatcher(key)
+		if req.meta.cmd then
+			--print('--->', req.meta.cmd)
+			-- 如果是状态查询，则立即返回
+			if req.meta.cmd == '__cmd_lgserver_status' then
+				local res_data = http_response('status ok', 700, 'status ok', {})
+				responseData(key, res_data)
+			end
+		else 
+			if req.meta.completed then
+				req.method = parser:method()
+				req.version = parser:version()
+				serviceDispatcher(key)
+			end
 		end
 	end
 
-    cleanConnection (key)
-	logger:info('connection '..key..' closed.')
+    	if not req.meta.cmd then
+		cleanConnection (key)
+		logger:info('connection '..key..' closed.')
+	end
 -->>
 	end)
 
