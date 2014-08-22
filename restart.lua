@@ -14,7 +14,7 @@ local killthem = function ()
                 pid = part:match(pattern)
                 print('===>>>>', pid)
                 if pid then
-                        os.execute(('sudo kill -9 %s'):format(pid))
+                        os.execute(('sudo kill -15 %s'):format(pid))
                 end
         end
 
@@ -22,5 +22,5 @@ local killthem = function ()
 
 killthem()
 
-os.execute('sudo nohup luajit main.lua &')
+os.execute('sudo luajit main.lua')
 print('OK')
