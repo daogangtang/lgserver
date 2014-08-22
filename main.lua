@@ -1,5 +1,9 @@
 -- includes
 
+-- run as daemon
+require 'daemon'
+daemon.daemonize('nochdir,nostdfds,noumask0')
+
 local lhp = require 'http.parser'
 local cmsgpack = require 'cmsgpack'
 local mimetypes = require 'mime'
@@ -9,12 +13,20 @@ local posix = require 'posix'
 local llthreads = require "llthreads"
 local zlib = require 'zlib'
 local CompressStream = zlib.deflate()
-local file_log_driver = require "logging.file"
+local zmq = require"zmq"
 
-local log_dir = '/var/tmp/logs/'
+
+local file_log_driver = require "logging.file"
+local log_dir = '/tmp/'
 local logger = file_log_driver(log_dir.."lgserver_access_%s.log", "%Y-%m-%d")
 
-local zmq = require"zmq"
+
+-- add callback to receive SIGTERM  kill or kill -15
+require 'signal'
+signal.signal("SIGTERM", function (...)
+	print('lgserver receive SIGTERM, os.exit')
+	os.exit()
+end)
 
 --require 'lglib'
 --p = fptable
@@ -605,43 +617,43 @@ local cb_from_http = function (client_skt)
 
 	local status, message = pcall(function()
 --<<
-	local req, key, parser
-	req = {headers={}, meta={}}
-	key = recordConnection(client, req)
-	parser = init_parser(req)
+        local req, key, parser
+        req = {headers={}, meta={}}
+        key = recordConnection(client, req)
+        parser = init_parser(req)
 
-	-- while here, for keep-alive
-	while true do
+        -- while here, for keep-alive
+        while true do
 
-		local s, errmsg, partial = client:receive(8192)
-		--print('--->', s, errmsg, partial)
-		if not s and errmsg == 'closed' then 
-		    break
-		end
+            local s, errmsg, partial = client:receive(8192)
+            --print('--->', s, errmsg, partial)
+            if not s and errmsg == 'closed' then 
+                break
+            end
 
-		local reqstr = s or partial
-		parser:execute(reqstr)
+            local reqstr = s or partial
+            parser:execute(reqstr)
 
-		if req.meta.cmd then
-			--print('--->', req.meta.cmd)
-			-- 如果是状态查询，则立即返回
-			if req.meta.cmd == '__cmd_lgserver_status' then
-				local res_data = http_response('status ok', 700, 'status ok', {})
-				responseData(key, res_data)
-			end
-		else 
-			if req.meta.completed then
-				req.method = parser:method()
-				req.version = parser:version()
-				serviceDispatcher(key)
-			end
-		end
-	end
+            if req.meta.cmd then
+                --print('--->', req.meta.cmd)
+                -- 如果是状态查询，则立即返回
+                if req.meta.cmd == '__cmd_lgserver_status' then
+                    local res_data = http_response('status ok', 700, 'status ok', {})
+                    responseData(key, res_data)
+                end
+            else 
+                if req.meta.completed then
+                    req.method = parser:method()
+                    req.version = parser:version()
+                    serviceDispatcher(key)
+                end
+            end
+        end
 
     	if not req.meta.cmd then
-		cleanConnection (key)
-		logger:info('connection '..key..' closed.')
-	end
+            cleanConnection (key)
+            logger:info('connection '..key..' closed.')
+        end
 -->>
 	end)
 
